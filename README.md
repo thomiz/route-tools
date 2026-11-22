@@ -20,6 +20,8 @@ red, orange, yellow, green, blue, indigo, and violet. Rides with the same
 displayed date use the same color. When a ride has no recorded start time, its
 displayed date uses the first 10 characters of its filename. Black dots mark
 the end of each GPX track.
+The map uses higher-detail tiles and is rendered at the output resolution
+while retaining the same geographic coverage.
 
 ## Example output
 

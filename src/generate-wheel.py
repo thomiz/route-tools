@@ -87,7 +87,7 @@ def parse_gpx_folder(folder_path):
     activities.sort(key=lambda x: x["sort_key"])
     return activities, all_lats, all_lons
 
-def fetch_center_map(activities, size_px=800):
+def fetch_center_map(activities, size_px=800, output_px=None):
     all_lons = [pt[0] for act in activities for pt in act["coords"]]
     all_lats = [pt[1] for act in activities for pt in act["coords"]]
     
@@ -112,47 +112,53 @@ def fetch_center_map(activities, size_px=800):
             zoom = z
             break
 
+    output_px = size_px if output_px is None else output_px
+    zoom_increase = min(max(0, math.ceil(math.log2(output_px / size_px))), 19 - zoom)
+    zoom += zoom_increase
+    source_size = size_px * 2 ** zoom_increase
     cx, cy = deg2num(center_lat, center_lon, zoom)
-    tiles_radius = math.ceil(size_px / 512) + 1
-    cx_int, cy_int = int(cx), int(cy)
-
-    canvas_tiles = (tiles_radius * 2 + 1) * 256
-    canvas = Image.new("RGB", (canvas_tiles, canvas_tiles), (24, 27, 32))
+    left = math.floor(cx * 256 - source_size / 2)
+    top = math.floor(cy * 256 - source_size / 2)
+    first_x, first_y = left // 256, top // 256
+    last_x = (left + source_size - 1) // 256
+    last_y = (top + source_size - 1) // 256
+    canvas = Image.new("RGB", ((last_x - first_x + 1) * 256, (last_y - first_y + 1) * 256))
     headers = {"User-Agent": "GPXActivityWheel/1.0 (local-script)"}
 
-    for dx in range(-tiles_radius, tiles_radius + 1):
-        for dy in range(-tiles_radius, tiles_radius + 1):
-            tx, ty = cx_int + dx, cy_int + dy
+    for tx in range(first_x, last_x + 1):
+        for ty in range(first_y, last_y + 1):
             url = f"https://tile.openstreetmap.org/{zoom}/{tx}/{ty}.png"
             resp = requests.get(url, headers=headers, timeout=10)
             resp.raise_for_status()
             tile = Image.open(io.BytesIO(resp.content)).convert("RGB")
-            canvas.paste(tile, ((dx + tiles_radius) * 256, (dy + tiles_radius) * 256))
+            canvas.paste(tile, ((tx - first_x) * 256, (ty - first_y) * 256))
 
-    # Crop centered on the bounding box midpoint
-    center_px_x = (tiles_radius + (cx - cx_int)) * 256
-    center_px_y = (tiles_radius + (cy - cy_int)) * 256
-    left = int(center_px_x - size_px / 2)
-    top = int(center_px_y - size_px / 2)
-    cropped = canvas.crop((left, top, left + size_px, top + size_px))
+    crop_left, crop_top = left - first_x * 256, top - first_y * 256
+    cropped = canvas.crop((crop_left, crop_top, crop_left + source_size, crop_top + source_size))
+    if source_size != output_px:
+        cropped = cropped.resize((output_px, output_px), Image.Resampling.LANCZOS)
 
     # Draw GPX tracks onto the cropped map
     draw = ImageDraw.Draw(cropped)
+    pixel_scale = output_px / source_size
+    route_width = max(1, round(4 * output_px / size_px))
+    dot_size = max(route_width + 1, round(6 * output_px / size_px))
     endpoints = []
     for act in activities:
         pts = []
         for lon, lat in act["coords"]:
             tx, ty = deg2num(lat, lon, zoom)
-            px = (tiles_radius + (tx - cx_int)) * 256 - left
-            py = (tiles_radius + (ty - cy_int)) * 256 - top
+            px = (tx * 256 - left) * pixel_scale
+            py = (ty * 256 - top) * pixel_scale
             pts.append((px, py))
         if len(pts) > 1:
-            draw.line(pts, fill=act["color"], width=4)
+            draw.line(pts, fill=act["color"], width=route_width)
         endpoints.extend(pts[index] for index in act["track_end_indices"])
 
     for px, py in endpoints:
-        x, y = round(px), round(py)
-        draw.ellipse((x - 3, y - 3, x + 2, y + 2), fill="black")
+        x = round(px - (dot_size - 1) / 2)
+        y = round(py - (dot_size - 1) / 2)
+        draw.ellipse((x, y, x + dot_size - 1, y + dot_size - 1), fill="black")
 
     return np.array(cropped)
 
@@ -203,10 +209,7 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
             day_colors[act["date"]] = DAY_COLORS[len(day_colors) % len(DAY_COLORS)]
         act["color"] = day_colors[act["date"]]
 
-    # 1. Fetch OpenStreetMap image with routes overlaid
-    map_img = fetch_center_map(activities, size_px=900)
-
-    # 2. Setup figure and polar axis
+    # 1. Setup figure and polar axis
     dark = background == "dark" or (background == "transparent" and transparent_theme == "dark")
     background_color = "#121417" if background == "dark" else ("white" if background == "white" else "none")
     text_color = "#e0e6ed" if dark else "#121417"
@@ -226,7 +229,7 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     R_LABEL = 1.54       # Radius of the inner label line
     R_MAP = R_ELE_BASE - 6 * ax.get_rmax() / (ax.bbox.height / 2)
 
-    # 3. Embed circular map in the center using a standard Cartesian overlay axis
+    # 2. Embed circular map in the center using a standard Cartesian overlay axis
     polar_bounds = ax.get_position()
     map_fraction = R_MAP / ax.get_rmax()
     map_width = polar_bounds.width * map_fraction
@@ -237,7 +240,14 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
         map_width, map_height,
     ], zorder=10)
     ax_map.axis("off")
-    im = ax_map.imshow(map_img)
+    map_pixels = math.ceil(ax_map.bbox.width)
+    map_img = None
+    try:
+        map_img = fetch_center_map(activities, size_px=900, output_px=map_pixels)
+    finally:
+        if map_img is None:
+            plt.close(fig)
+    im = ax_map.imshow(map_img, interpolation="nearest")
     
     # Clip the square map image into a circle
     patch = Circle((0.5, 0.5), radius=0.5, transform=ax_map.transAxes)
@@ -246,7 +256,7 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     border_theta = np.linspace(0, 2 * np.pi, 300)
     ax.plot(border_theta, np.full_like(border_theta, R_MAP), color=border_color, lw=2)
 
-    # 4. Normalize elevations globally across all rides
+    # 3. Normalize elevations globally across all rides
     all_eles = np.concatenate([a["elevations"] for a in activities])
     min_ele, max_ele = np.min(all_eles), np.max(all_eles)
     ele_span = max(max_ele - min_ele, 1.0)

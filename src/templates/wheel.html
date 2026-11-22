@@ -24,7 +24,7 @@
   #wheel { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; pointer-events: none; }
   .sector { pointer-events: auto; cursor: pointer; outline: none; }
   .sector .hit { fill-opacity: 0; transition: fill-opacity 0.15s; }
-  .sector:hover .hit, .sector:focus-visible .hit { fill-opacity: 0.18; }
+  .sector.highlighted .hit, .sector:focus-visible .hit { fill-opacity: 0.18; }
   .sector:focus-visible .hit { stroke: var(--text); stroke-width: 1.5; }
   .sector text { fill: var(--text); dominant-baseline: central; }
   footer {
@@ -57,6 +57,34 @@
   const BASE_FONT = 12.5;
   const MAP_RADIUS = DATA.radii.base - 0.025;
   const svg = document.getElementById("wheel");
+  const sectorLinks = new Map();
+  const rideLayers = new Map();
+  let hoveredRide = null;
+  let focusedRide = null;
+  let highlightedRide = null;
+
+  function updateHighlight() {
+    const rideId = hoveredRide ?? focusedRide;
+    if (rideId === highlightedRide) return;
+    highlightedRide = rideId;
+    for (const [id, link] of sectorLinks) {
+      link.classList.toggle("highlighted", id === rideId);
+    }
+    for (const [id, layers] of rideLayers) {
+      for (const layer of layers) {
+        layer.setStyle({weight: id === rideId ? 6 : 3, opacity: id === rideId ? 1 : 0.95});
+      }
+    }
+  }
+
+  function hoverRide(rideId) {
+    hoveredRide = rideId;
+    updateHighlight();
+  }
+
+  function leaveRide(rideId) {
+    if (hoveredRide === rideId) hoverRide(null);
+  }
 
   const polar = (theta, r) => [CENTER + r * SCALE * Math.sin(theta), CENTER - r * SCALE * Math.cos(theta)];
   const fmt = n => n.toFixed(2);
@@ -136,8 +164,14 @@
 
     const link = element("a", {
       class: "sector", href: dayUrl(sector.date),
+      "data-ride-id": sector.ride_id,
       "aria-label": `${sector.label}, ${sector.stats}. Open day view.`,
     });
+    sectorLinks.set(sector.ride_id, link);
+    link.addEventListener("mouseenter", () => hoverRide(sector.ride_id));
+    link.addEventListener("mouseleave", () => leaveRide(sector.ride_id));
+    link.addEventListener("focus", () => { focusedRide = sector.ride_id; updateHighlight(); });
+    link.addEventListener("blur", () => { focusedRide = null; updateHighlight(); });
     element("title", {}, link).textContent = `${sector.label}\n${sector.stats}\nClick to explore this day`;
     element("path", {class: "hit", d: annulus(start, end, base, labelRadius + 0.13), fill: sector.color}, link);
 
@@ -166,23 +200,30 @@
   });
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom: 19}).addTo(map);
   const routes = L.featureGroup().addTo(map);
-  for (const day of DATA.days) {
-    const openDay = () => { window.location.href = dayUrl(day.date); };
-    for (const track of day.tracks) {
-      if (track.length > 1) {
-        L.polyline(track, {color: day.color, weight: 3, opacity: 0.95})
-          .bindTooltip(day.date, {sticky: true})
-          .on("click", openDay)
-          .addTo(routes);
-      }
-    }
-    for (const line of day.transit) {
-      L.polyline(line, {color: day.color, weight: 3, opacity: 0.95, dashArray: "1 6", lineCap: "round"})
-        .bindTooltip(`${day.date} · train/ferry`, {sticky: true})
+  for (const ride of DATA.rides) {
+    const openDay = () => { window.location.href = dayUrl(ride.date); };
+    const layers = [];
+    rideLayers.set(ride.id, layers);
+    const addRoute = (points, options, tooltip) => {
+      const layer = L.polyline(points, {
+        color: ride.color, weight: 3, opacity: 0.95, className: `ride-route ride-${ride.id}`, ...options,
+      })
+        .bindTooltip(tooltip, {sticky: true})
+        .on("mouseover", () => hoverRide(ride.id))
+        .on("mouseout", () => leaveRide(ride.id))
         .on("click", openDay)
         .addTo(routes);
+      layers.push(layer);
+    };
+    for (const track of ride.tracks) {
+      if (track.length > 1) {
+        addRoute(track, {}, `${ride.date} · ${ride.name}`);
+      }
     }
-    for (const end of day.ends) {
+    for (const line of ride.transit) {
+      addRoute(line, {dashArray: "1 6", lineCap: "round"}, `${ride.date} · ${ride.name} · train/ferry`);
+    }
+    for (const end of ride.ends) {
       L.circleMarker(end, {
         radius: 2.5, stroke: false, fillColor: "black", fillOpacity: 1, interactive: false,
       }).addTo(routes);

@@ -111,6 +111,9 @@ Both pages are saved in the repository's `docs` folder by default.
 
 - `activity_wheel.html` is the interactive activity wheel. Click a ride's
   elevation profile, its label or its route on the centre map to open that day.
+  Hover over a ride's sector or its map route to highlight both. Highlighting
+  is per ride, even when several rides share a date; dotted train/ferry
+  connections are included. Keyboard focus on a sector also highlights its route.
 - `activity_wheel_day.html` shows the selected day on a zoomable map, with an
   elevation profile underneath. The profile is coloured by gradient (see the
   legend on the page), and hovering over the profile or the route shows the

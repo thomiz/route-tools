@@ -384,6 +384,7 @@ def wheel_payload(activities, colors, day_page):
     ele_span = max(np.max(all_eles) - min_ele, 1.0)
     gap_rad, sectors = wheel_sectors(activities)
     totals = summarize(activities)
+    ride_ids = {id(act): index for index, act in enumerate(activities)}
     return {
         "theme": colors,
         "day_page": day_page,
@@ -392,6 +393,7 @@ def wheel_payload(activities, colors, day_page):
         "gap": gap_rad,
         "summary": summary_lines(totals),
         "sectors": [{
+            "ride_id": ride_ids[id(act)],
             "date": act["date"],
             "color": act["color"],
             "start": start,
@@ -400,13 +402,15 @@ def wheel_payload(activities, colors, day_page):
             "stats": f"{act['distance_km']:.1f} km | +{act['elev_gain_m']:.0f} m",
             "profile": _rounded((act["elevations"] - min_ele) / ele_span, 4),
         } for act, start, end in sectors],
-        "days": [{
-            "date": day["date"],
-            "color": day["color"],
-            "tracks": [track for act in day["rides"] for track in split_tracks(act, min_spacing_m=50)],
-            "ends": [end for act in day["rides"] for end in track_ends(act)],
-            "transit": [line for act in day["rides"] for line in transit_lines(act)],
-        } for day in group_days(activities)],
+        "rides": [{
+            "id": index,
+            "date": act["date"],
+            "name": act["name"],
+            "color": act["color"],
+            "tracks": split_tracks(act, min_spacing_m=50),
+            "ends": track_ends(act),
+            "transit": transit_lines(act),
+        } for index, act in enumerate(activities)],
     }
 
 def render_page(template_name, payload):

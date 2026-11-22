@@ -90,6 +90,11 @@ class InteractiveWheelTests(unittest.TestCase):
         self.assertEqual(day_data["wheel_page"], "activity_wheel.html")
         self.assertEqual([s["date"] for s in wheel_data["sectors"]], ["2026-05-01", "2026-05-01", "2026-05-02"])
         self.assertEqual(wheel_data["sectors"][2]["label"], "2026-05-02 | </script><b>x")
+        for sector, ride in zip(wheel_data["sectors"], wheel_data["rides"]):
+            self.assertEqual(sector["ride_id"], ride["id"])
+            self.assertEqual(sector["label"], f'{ride["date"]} | {ride["name"]}')
+            self.assertTrue(ride["tracks"])
+        self.assertNotEqual(wheel_data["rides"][0]["id"], wheel_data["rides"][1]["id"])
 
         first, second = day_data["days"]
         self.assertEqual([ride["name"] for ride in first["rides"]], ["Morning", "Evening"])
@@ -100,6 +105,20 @@ class InteractiveWheelTests(unittest.TestCase):
         self.assertTrue(first["has_elevation"])
         self.assertFalse(second["has_elevation"])
         self.assertEqual(len(day_data["bands"]), len(wheel.GRADIENT_BANDS))
+
+    def test_zero_distance_ride_does_not_shift_sector_associations(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.write_rides(folder)
+            Path(folder, "0.gpx").write_text(
+                gpx_file("Stationary", "2026-04-30", [(59.9, 10.7, 100)]), encoding="utf-8")
+            activities, _, _ = wheel.parse_gpx_folder(folder)
+            wheel.assign_day_colors(activities)
+            payload = wheel.wheel_payload(activities, wheel.theme_colors("dark", None), "day.html")
+        self.assertEqual(payload["rides"][0]["name"], "Stationary")
+        self.assertNotIn(0, [sector["ride_id"] for sector in payload["sectors"]])
+        for sector in payload["sectors"]:
+            ride = payload["rides"][sector["ride_id"]]
+            self.assertEqual(sector["label"], f'{ride["date"]} | {ride["name"]}')
 
     def test_explicit_output_keeps_both_pages_in_selected_folder(self):
         with tempfile.TemporaryDirectory() as folder, \

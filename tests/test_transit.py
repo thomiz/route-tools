@@ -124,7 +124,7 @@ class TransitTests(unittest.TestCase):
             wheel_data = embedded_data(Path(folder, "activity_wheel.html").read_text(encoding="utf-8"))
             day_data = embedded_data(Path(folder, "activity_wheel_day.html").read_text(encoding="utf-8"))
         self.assertTrue(wheel_data["summary"][-1].startswith("Train/ferry"))
-        overview = wheel_data["days"][0]
+        overview = wheel_data["rides"][0]
         self.assertEqual((len(overview["tracks"]), len(overview["ends"]), len(overview["transit"])), (2, 1, 1))
         day = day_data["days"][0]
         self.assertAlmostEqual(day["distance_km"], 2.0, delta=0.05)

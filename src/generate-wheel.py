@@ -192,7 +192,8 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     background_color = "#121417" if background == "dark" else ("white" if background == "white" else "none")
     text_color = "#e0e6ed" if dark else "#121417"
     border_color = "#aab4bd" if background == "transparent" and dark else ("#3a404a" if dark else "#6c757d")
-    fig = plt.figure(figsize=(12, 12), facecolor=background_color)
+    dpi = 300
+    fig = plt.figure(figsize=(12, 12), dpi=dpi, facecolor=background_color)
     ax = fig.add_subplot(111, projection="polar", facecolor=background_color)
     ax.set_theta_zero_location("N")  # Start at 12 o'clock
     ax.set_theta_direction(-1)       # Go clockwise
@@ -201,23 +202,30 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     ax.apply_aspect()
 
     # Radial layout dimensions
-    R_MAP = 1.0          # Radius of the inner map circle
     R_ELE_BASE = 1.06    # Inner ring where elevation starts
     R_ELE_MAX = 1.45     # Outer limit for highest elevation peak
     R_LABEL = 1.54       # Radius of the inner label line
+    R_MAP = R_ELE_BASE - 6 * ax.get_rmax() / (ax.bbox.height / 2)
 
     # 3. Embed circular map in the center using a standard Cartesian overlay axis
-    ax_map = fig.add_axes([0.325, 0.325, 0.35, 0.35], zorder=10)
+    polar_bounds = ax.get_position()
+    map_fraction = R_MAP / ax.get_rmax()
+    map_width = polar_bounds.width * map_fraction
+    map_height = polar_bounds.height * map_fraction
+    ax_map = fig.add_axes([
+        polar_bounds.x0 + (polar_bounds.width - map_width) / 2,
+        polar_bounds.y0 + (polar_bounds.height - map_height) / 2,
+        map_width, map_height,
+    ], zorder=10)
     ax_map.axis("off")
     im = ax_map.imshow(map_img)
     
     # Clip the square map image into a circle
-    h, w, _ = map_img.shape
-    patch = Circle((w / 2, h / 2), radius=min(w, h) / 2, transform=ax_map.transData)
+    patch = Circle((0.5, 0.5), radius=0.5, transform=ax_map.transAxes)
     im.set_clip_path(patch)
     # Add a clean border ring around the map
     border_theta = np.linspace(0, 2 * np.pi, 300)
-    ax.plot(border_theta, np.full_like(border_theta, R_MAP + 0.02), color=border_color, lw=2)
+    ax.plot(border_theta, np.full_like(border_theta, R_MAP), color=border_color, lw=2)
 
     # 4. Normalize elevations globally across all rides
     all_eles = np.concatenate([a["elevations"] for a in activities])
@@ -283,8 +291,6 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
             print(f"Ride sector too narrow for the full rim label: {ride_label} ({stats})")
         theta_start = theta_end + gap_rad
 
-    dpi = 300
-    fig.set_dpi(dpi)
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
     rendered = Image.frombuffer("RGBA", canvas.get_width_height(), canvas.buffer_rgba(), "raw", "RGBA", 0, 1)

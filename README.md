@@ -11,17 +11,22 @@ appears in the bottom-right corner of the image.
 The output is cropped to the infographic with approximately 10 pixels of
 padding on each edge.
 
-Prerequisites
+## Prerequisites
 
 Install the required libraries using pip:
 ~~~bash
 pip install gpxpy matplotlib numpy requests pillow
 ~~~
 
+## Run script
+
 Run the script with the directory containing your GPX files:
+
 ~~~powershell
 python src\generate-wheel.py "C:\path\to\gpx_tracks"
 ~~~
+
+### Arguments and switches
 
 The directory argument is optional and defaults to `./gpx_tracks`. The generated
 `activity_wheel.png` is saved in the GPX directory. The script needs
@@ -32,22 +37,26 @@ The default background is dark. Use `--background white` for a white image, or
 `--transparent-theme light` (the default, with dark labels for a light
 background) or `--transparent-theme dark` (with light labels for a dark
 background). The map and summary sector remain visible.
+
 ~~~powershell
 python src\generate-wheel.py "C:\path\to\gpx_tracks" --background transparent --transparent-theme dark
 ~~~
 
 If the default output cannot be written, use `--output` to choose another
 filename in an existing writable folder:
+
 ~~~powershell
 python src\generate-wheel.py "C:\path\to\gpx_tracks" --output "$env:TEMP\activity_wheel_new.png"
 ~~~
 
-## How to Use It with Strava Data
+## How to use with Strava Data
 
 1. Export from Strava:
-	• Single rides: Open any activity on Strava → click the ... (More) icon → Export GPX.
-	• Bulk export: Go to Strava Settings → My Account → Download or Delete Your Account → Request Your Archive. Unzip the archive and copy the .gpx files from the activities folder into your chosen GPX directory. (Note: If your bulk archive contains .fit.gz files instead of .gpx, you can convert them using gpsbabel or fitparse.)
+   1. Single rides: Open any activity on Strava → click the ... (More) icon → Export GPX.
+   2. Bulk export: Go to Strava Settings → My Account → Download or Delete Your Account → Request Your Archive. Unzip the archive and copy the .gpx files from the activities folder into your chosen GPX directory. (Note: If your bulk archive contains .fit.gz files instead of .gpx, you can convert them using gpsbabel or fitparse.)
 
 ## Example output
+
+Example output for a weeks trip to Scotland.
 
 ![test](activity_wheel.png)

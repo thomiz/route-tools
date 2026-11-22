@@ -2,6 +2,14 @@
 
 Python script for generating an activity wheel infographics for multi day rides based on gpx data.
 
+## Example output
+
+Example output for a weeks trip to Scotland. 
+
+[Interactive map demo](https://thomiz.github.io/route-tools/activity_wheel.html)
+
+![Example generated png output](docs/activity_wheel.png)
+
 ## Features
 
 It reads all .gpx files in a folder (which you can export from Strava or any GPS device), places a cropped OpenStreetMap of your riding area in the center circle, wraps the continuous elevation profile of every ride around the perimeter, and labels each segment with the date, track name, distance, and elevation gain. It uses the first named track containing points, or the filename if no such name is available.
@@ -52,12 +60,6 @@ files may also be a car journey or a sorting issue.
 ~~~powershell
 python src\generate-wheel.py "C:\path\to\gpx_tracks" --transit-gap-min 15 --transit-min-km 2 --transit-between-files
 ~~~
-
-## Example output
-
-Example output for a weeks trip to Scotland.
-
-![Example generated output](docs/activity_wheel.png)
 
 ## Prerequisites
 

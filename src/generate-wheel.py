@@ -1,7 +1,7 @@
 import io
 import math
 import requests
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 import argparse
 import glob
 import os
@@ -9,9 +9,11 @@ from pathlib import Path
 import gpxpy
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.font_manager import FontProperties
 from matplotlib.patches import Circle
 from matplotlib.textpath import TextToPath
+from matplotlib.transforms import Bbox
 
 class WheelSaveError(OSError):
     pass
@@ -213,11 +215,6 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     h, w, _ = map_img.shape
     patch = Circle((w / 2, h / 2), radius=min(w, h) / 2, transform=ax_map.transData)
     im.set_clip_path(patch)
-    fig.text(
-        0.98, 0.02, "\N{COPYRIGHT SIGN} OpenStreetMap contributors",
-        ha="right", va="bottom", fontsize=7, color=text_color,
-    )
-
     # Add a clean border ring around the map
     border_theta = np.linspace(0, 2 * np.pi, 300)
     ax.plot(border_theta, np.full_like(border_theta, R_MAP + 0.02), color=border_color, lw=2)
@@ -286,8 +283,33 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
             print(f"Ride sector too narrow for the full rim label: {ride_label} ({stats})")
         theta_start = theta_end + gap_rad
 
+    dpi = 300
+    fig.set_dpi(dpi)
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    rendered = Image.frombuffer("RGBA", canvas.get_width_height(), canvas.buffer_rgba(), "raw", "RGBA", 0, 1)
+    if background == "transparent":
+        content = rendered.getchannel("A")
+    else:
+        rgb = rendered.convert("RGB")
+        content = ImageChops.difference(rgb, Image.new("RGB", rgb.size, rgb.getpixel((0, 0))))
+    bounds = content.getbbox()
+    if bounds is None:
+        plt.close(fig)
+        raise ValueError("Cannot determine the bounds of an empty infographic.")
+    left, top, right, bottom = bounds
+    width, height = rendered.size
+    fig.text(
+        right / width, (height - bottom) / height, "\N{COPYRIGHT SIGN} OpenStreetMap contributors",
+        ha="right", va="bottom", fontsize=7, color=text_color,
+    )
+    padding = 10
+    crop = Bbox.from_extents(
+        (left - padding) / dpi, (height - bottom - padding) / dpi,
+        (right + padding) / dpi, (height - top + padding) / dpi,
+    )
     try:
-        fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor=background_color)
+        fig.savefig(output_path, dpi=dpi, bbox_inches=crop, facecolor=background_color)
     except OSError as exc:
         raise WheelSaveError(
             f'Could not save the activity wheel to "{output_path}": {exc}. '

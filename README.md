@@ -8,6 +8,8 @@ have no sector. The top sector shows total distance, elevation gain, and elapsed
 time (including pauses within recorded track segments). If only some rides
 have usable timing data, the time is marked partial. OpenStreetMap attribution
 appears in the bottom-right corner of the image.
+The output is cropped to the infographic with approximately 10 pixels of
+padding on each edge.
 
 Prerequisites
 

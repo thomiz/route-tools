@@ -1,5 +1,9 @@
 # Generate activity wheel
 
+Python script for generating an activity wheel infographics for multi day rides based on gpx data.
+
+## Features
+
 It reads all .gpx files in a folder (which you can export from Strava or any GPS device), places a cropped OpenStreetMap of your riding area in the center circle, wraps the continuous elevation profile of every ride around the perimeter, and labels each segment with the date, track name, distance, and elevation gain. It uses the first named track containing points, or the filename if no such name is available.
 
 Ride labels curve along the rim, and each ride sector is proportional to its
@@ -10,6 +14,18 @@ have usable timing data, the time is marked partial. OpenStreetMap attribution
 appears in the bottom-right corner of the image.
 The output is cropped to the infographic with approximately 10 pixels of
 padding on each edge.
+
+Routes and their elevation profiles share a color for each day, cycling through
+red, orange, yellow, green, blue, indigo, and violet. Rides with the same
+displayed date use the same color. When a ride has no recorded start time, its
+displayed date uses the first 10 characters of its filename. Black dots mark
+the end of each GPX track.
+
+## Example output
+
+Example output for a weeks trip to Scotland.
+
+![test](activity_wheel.png)
 
 ## Prerequisites
 
@@ -55,8 +71,3 @@ python src\generate-wheel.py "C:\path\to\gpx_tracks" --output "$env:TEMP\activit
    1. Single rides: Open any activity on Strava → click the ... (More) icon → Export GPX.
    2. Bulk export: Go to Strava Settings → My Account → Download or Delete Your Account → Request Your Archive. Unzip the archive and copy the .gpx files from the activities folder into your chosen GPX directory. (Note: If your bulk archive contains .fit.gz files instead of .gpx, you can convert them using gpsbabel or fitparse.)
 
-## Example output
-
-Example output for a weeks trip to Scotland.
-
-![test](activity_wheel.png)

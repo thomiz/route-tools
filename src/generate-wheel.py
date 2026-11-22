@@ -15,6 +15,8 @@ from matplotlib.patches import Circle
 from matplotlib.textpath import TextToPath
 from matplotlib.transforms import Bbox
 
+DAY_COLORS = ("red", "orange", "yellow", "green", "blue", "indigo", "violet")
+
 class WheelSaveError(OSError):
     pass
 
@@ -27,6 +29,7 @@ def parse_gpx_folder(folder_path):
             gpx = gpxpy.parse(f)
 
         coords = []
+        track_end_indices = []
         elevations = []
         distances = [0.0]
         total_dist = 0.0
@@ -40,6 +43,7 @@ def parse_gpx_folder(folder_path):
 
         prev_pt = None
         for track in gpx.tracks:
+            track_start = len(coords)
             for segment in track.segments:
                 for pt in segment.points:
                     coords.append((pt.longitude, pt.latitude))
@@ -58,6 +62,8 @@ def parse_gpx_folder(folder_path):
                         if ele > prev_ele:
                             elev_gain += (ele - prev_ele)
                     prev_pt = pt
+            if len(coords) > track_start:
+                track_end_indices.append(len(coords) - 1)
 
         if not coords:
             continue
@@ -71,6 +77,7 @@ def parse_gpx_folder(folder_path):
             "name": track_name,
             "sort_key": start_time.timestamp() if start_time else 0,
             "coords": coords,
+            "track_end_indices": track_end_indices,
             "elevations": resampled_ele,
             "distance_km": total_dist / 1000.0,
             "elev_gain_m": elev_gain,
@@ -131,6 +138,7 @@ def fetch_center_map(activities, size_px=800):
 
     # Draw GPX tracks onto the cropped map
     draw = ImageDraw.Draw(cropped)
+    endpoints = []
     for act in activities:
         pts = []
         for lon, lat in act["coords"]:
@@ -139,7 +147,12 @@ def fetch_center_map(activities, size_px=800):
             py = (tiles_radius + (ty - cy_int)) * 256 - top
             pts.append((px, py))
         if len(pts) > 1:
-            draw.line(pts, fill="#e63946", width=4)
+            draw.line(pts, fill=act["color"], width=4)
+        endpoints.extend(pts[index] for index in act["track_end_indices"])
+
+    for px, py in endpoints:
+        x, y = round(px), round(py)
+        draw.ellipse((x - 3, y - 3, x + 2, y + 2), fill="black")
 
     return np.array(cropped)
 
@@ -183,6 +196,12 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     if not activities:
         print("No valid GPX tracks found.")
         return
+
+    day_colors = {}
+    for act in activities:
+        if act["date"] not in day_colors:
+            day_colors[act["date"]] = DAY_COLORS[len(day_colors) % len(DAY_COLORS)]
+        act["color"] = day_colors[act["date"]]
 
     # 1. Fetch OpenStreetMap image with routes overlaid
     map_img = fetch_center_map(activities, size_px=900)
@@ -272,8 +291,8 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
         radii = R_ELE_BASE + norm_ele * (R_ELE_MAX - R_ELE_BASE)
 
         # Fill and stroke the elevation profile
-        ax.fill_between(thetas, R_ELE_BASE, radii, color="#2a9d8f", alpha=0.45)
-        ax.plot(thetas, radii, color="#4cc9f0" if dark else "#087d8d", lw=1.8)
+        ax.fill_between(thetas, R_ELE_BASE, radii, color=act["color"], alpha=0.45)
+        ax.plot(thetas, radii, color=act["color"], lw=1.8)
 
         # Add radial divider line
         divider_color = "#2b303a" if background == "dark" else border_color

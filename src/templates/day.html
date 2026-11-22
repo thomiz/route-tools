@@ -31,6 +31,7 @@
   #profile-panel { position: relative; height: 260px; padding: 0.4rem 1rem 0.6rem; box-sizing: border-box; display: flex; flex-direction: column; }
   #legend { list-style: none; display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; margin: 0 0 0.3rem; padding: 0; font-size: 0.8rem; }
   #legend span { display: inline-block; width: 0.8rem; height: 0.8rem; margin-right: 0.3rem; vertical-align: -0.1rem; border-radius: 2px; }
+  #legend span.transit-swatch { width: 0; height: 0.9rem; border-left: 2px dotted var(--text); border-radius: 0; margin: 0 0.5rem 0 0.4rem; }
   #profile { flex: 1 1 auto; width: 100%; min-height: 0; display: block; outline: none; }
   #profile:focus-visible { box-shadow: 0 0 0 2px var(--border); }
   #profile text { fill: var(--text); font-size: 11px; }
@@ -75,6 +76,13 @@
     const swatch = document.createElement("span");
     swatch.style.background = band.color;
     item.append(swatch, band.label);
+    $("legend").appendChild(item);
+  }
+  if (DATA.days.some(day => day.transit_km > 0)) {
+    const item = document.createElement("li");
+    const swatch = document.createElement("span");
+    swatch.className = "transit-swatch";
+    item.append(swatch, "Train/ferry");
     $("legend").appendChild(item);
   }
 
@@ -128,16 +136,28 @@
     selectedDay.clearLayers();
     for (const other of DATA.days) {
       if (other === day) continue;
+      const openOther = () => { window.location.hash = dayHash(other.date); };
       for (const ride of other.rides) {
         for (const track of ride.tracks.filter(t => t.length > 1)) {
           L.polyline(track, {color: "#7a7f87", weight: 3, opacity: 0.5})
             .bindTooltip(other.date, {sticky: true})
-            .on("click", () => { window.location.hash = dayHash(other.date); })
+            .on("click", openOther)
+            .addTo(otherDays);
+        }
+        for (const line of ride.transit) {
+          L.polyline(line, {color: "#7a7f87", weight: 3, opacity: 0.5, dashArray: "1 7", lineCap: "round"})
+            .bindTooltip(`${other.date} · train/ferry`, {sticky: true})
+            .on("click", openOther)
             .addTo(otherDays);
         }
       }
     }
     for (const ride of day.rides) {
+      for (const line of ride.transit) {
+        L.polyline(line, {color: day.color, weight: 4, opacity: 1, dashArray: "1 8", lineCap: "round"})
+          .bindTooltip("Train/ferry (straight line)", {sticky: true})
+          .addTo(selectedDay);
+      }
       for (const track of ride.tracks.filter(t => t.length > 1)) {
         L.polyline(track, {color: day.color, weight: 4, opacity: 1})
           .on("mousemove", event => showHover(nearestSample(event.latlng)))
@@ -223,6 +243,11 @@
     for (const boundary of current.ride_boundaries_km) {
       element("line", {x1: x(boundary), x2: x(boundary), y1: margin.top, y2: baseline,
         stroke: theme.text, "stroke-width": 1, "stroke-dasharray": "4 3", opacity: 0.6});
+    }
+    for (const transit of current.transit_breaks_km) {
+      const line = element("line", {x1: x(transit), x2: x(transit), y1: margin.top, y2: baseline,
+        stroke: theme.text, "stroke-width": 2, "stroke-dasharray": "1 4", "stroke-linecap": "round"});
+      element("title", {}, line).textContent = "Train/ferry";
     }
 
     chart.cursor = element("line", {y1: margin.top, y2: baseline, stroke: theme.text, "stroke-width": 1, visibility: "hidden"});
@@ -311,8 +336,9 @@
     $("date").textContent = day.date;
     $("swatch").style.background = day.color;
     const names = day.rides.map(ride => ride.name).join(", ");
+    const transit = day.transit_km > 0 ? ` · train/ferry ≈ ${Math.round(day.transit_km)} km` : "";
     $("stats").textContent = `${day.distance_km.toFixed(1)} km · +${Math.round(day.elev_gain_m)} m · ` +
-      `${day.elapsed} · ${day.rides.length === 1 ? "Ride" : "Rides"}: ${names}`;
+      `${day.elapsed}${transit} · ${day.rides.length === 1 ? "Ride" : "Rides"}: ${names}`;
     setNav($("previous"), DATA.days[index - 1]);
     setNav($("next"), DATA.days[index + 1]);
     drawRoutes(day);

@@ -145,12 +145,17 @@ class WheelLayoutTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs["width"] == route_width for call in line_calls))
         self.assertEqual(len(dots.call_args_list), len(days) + 1)
         first_line_points = line_calls[0].args[1]
-        for call, point in zip(dots.call_args_list[:2], [first_line_points[1], first_line_points[-1]]):
+        # Separate GPX tracks are drawn as separate lines; the second dot marks the one-point second track.
+        self.assertEqual(len(first_line_points), 2)
+        for call, point in zip(dots.call_args_list[:1], [first_line_points[-1]]):
             left, top, right, bottom = call.args[1]
             self.assertEqual(call.kwargs["fill"], "black")
             self.assertEqual((right - left + 1, bottom - top + 1), (dot_size, dot_size))
             self.assertAlmostEqual((left + right) / 2, point[0], delta=1)
             self.assertAlmostEqual((top + bottom) / 2, point[1], delta=1)
+        for call in dots.call_args_list:
+            left, top, right, bottom = call.args[1]
+            self.assertEqual((call.kwargs["fill"], right - left + 1), ("black", dot_size))
 
     def test_map_is_centered_within_ten_pixels_of_information_ring(self):
         def verify_layout(figure, *args, **kwargs):

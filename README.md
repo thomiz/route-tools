@@ -9,9 +9,9 @@ It reads all .gpx files in a folder (which you can export from Strava or any GPS
 Ride labels curve along the rim, and each ride sector is proportional to its
 share of the total distance. Zero-distance rides contribute to the totals but
 have no sector. The top sector shows total distance, elevation gain, and elapsed
-time (including pauses within recorded track segments). If only some rides
-have usable timing data, the time is marked partial. OpenStreetMap attribution
-appears in the bottom-right corner of the image.
+time (including pauses within recorded track segments, except train and ferry
+rides). If only some rides have usable timing data, the time is marked partial.
+OpenStreetMap attribution appears in the bottom-right corner of the image.
 The output is cropped to the infographic with approximately 10 pixels of
 padding on each edge.
 
@@ -22,6 +22,36 @@ displayed date uses the first 10 characters of its filename. Black dots mark
 the end of each GPX track.
 The map uses higher-detail tiles and is rendered at the output resolution
 while retaining the same geographic coverage.
+
+### Train and ferry rides
+
+If you pause recording on a train or ferry, the GPX file has a long time gap
+between two points. A gap of at least 10 minutes where the position moves at
+least 1 km is treated as a train or ferry ride. Shorter stops, and longer stops
+where you stayed in place (such as a café break), still count as part of the
+ride.
+
+- The map shows a train or ferry ride as a dotted line in the day's colour
+  between the two points, with no black end dot.
+- Its distance, time and elevation change are excluded from the ride's
+  distance, elapsed time, and elevation gain, so all totals cover cycling
+  only. The summary sector adds a separate `Train/ferry: ≈ … km` line.
+- The distance is a straight line, so it underestimates the real route. The
+  script cannot tell a train from a ferry.
+- In the interactive day view, the elevation profile is split at each train or
+  ferry ride and marked with a dotted line, so the height difference between
+  stations is not shown as a climb.
+
+Use `--transit-gap-min MINUTES` and `--transit-min-km KM` to change the
+thresholds. If you stop recording and start a new GPX file after the train or
+ferry, add `--transit-between-files`. A dotted line is then also drawn between
+consecutive rides on the same date when they are at least that far apart in
+both time and distance. This option is off by default, because a gap between
+files may also be a car journey or a sorting issue.
+
+~~~powershell
+python src\generate-wheel.py "C:\path\to\gpx_tracks" --transit-gap-min 15 --transit-min-km 2 --transit-between-files
+~~~
 
 ## Example output
 

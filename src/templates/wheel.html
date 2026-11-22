@@ -116,7 +116,7 @@
   element("path", {d: annulus(-half, half, base, peak), fill: theme.summary, stroke: theme.border});
   const [sx, sy] = polar(0, (base + peak) / 2);
   const summary = element("text", {
-    x: fmt(sx), y: fmt(sy - BASE_FONT * 1.25), "font-size": BASE_FONT,
+    x: fmt(sx), y: fmt(sy - BASE_FONT * 1.25 * (DATA.summary.length - 1) / 2), "font-size": BASE_FONT,
     "text-anchor": "middle", "dominant-baseline": "central", fill: theme.text,
   });
   DATA.summary.forEach((line, index) => {
@@ -167,14 +167,23 @@
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom: 19}).addTo(map);
   const routes = L.featureGroup().addTo(map);
   for (const day of DATA.days) {
+    const openDay = () => { window.location.href = dayUrl(day.date); };
     for (const track of day.tracks) {
       if (track.length > 1) {
         L.polyline(track, {color: day.color, weight: 3, opacity: 0.95})
           .bindTooltip(day.date, {sticky: true})
-          .on("click", () => { window.location.href = dayUrl(day.date); })
+          .on("click", openDay)
           .addTo(routes);
       }
-      L.circleMarker(track[track.length - 1], {
+    }
+    for (const line of day.transit) {
+      L.polyline(line, {color: day.color, weight: 3, opacity: 0.95, dashArray: "1 6", lineCap: "round"})
+        .bindTooltip(`${day.date} · train/ferry`, {sticky: true})
+        .on("click", openDay)
+        .addTo(routes);
+    }
+    for (const end of day.ends) {
+      L.circleMarker(end, {
         radius: 2.5, stroke: false, fillColor: "black", fillOpacity: 1, interactive: false,
       }).addTo(routes);
     }

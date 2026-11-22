@@ -8,6 +8,7 @@ import glob
 import os
 from pathlib import Path
 import gpxpy
+import gpxpy.geo
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -38,12 +39,22 @@ GRADIENT_BANDS = (
 PROFILE_MAX_SAMPLES = 2000
 PROFILE_SMOOTHING_M = 80
 GRADIENT_WINDOW_M = 100
+# Recording pauses at least this long and far are drawn as train or ferry rides
+TRANSIT_GAP_S = 600
+TRANSIT_MIN_M = 1000
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
 class WheelSaveError(OSError):
     pass
 
-def parse_gpx_folder(folder_path):
+def is_transit_gap(prev_pt, pt, gap_s, min_m):
+    """A recording pause long in both time and distance is treated as a train or ferry ride."""
+    if prev_pt.time is None or pt.time is None:
+        return False
+    return (pt.time - prev_pt.time).total_seconds() >= gap_s and pt.distance_2d(prev_pt) >= min_m
+
+def parse_gpx_folder(folder_path, transit_gap_s=TRANSIT_GAP_S, transit_min_m=TRANSIT_MIN_M,
+                     transit_between_files=False):
     activities = []
     all_lats, all_lons = [], []
 
@@ -53,12 +64,17 @@ def parse_gpx_folder(folder_path):
 
         coords = []
         track_end_indices = []
+        transit_break_indices = []
+        transit_legs = []
+        transit_dist = 0.0
+        transit_time = 0.0
         elevations = []
         point_elevations = []
         distances = [0.0]
         total_dist = 0.0
         elev_gain = 0.0
-        start_time = gpx.get_time_bounds().start_time
+        time_bounds = gpx.get_time_bounds()
+        start_time = time_bounds.start_time
         track_name = next(
             (track.name.strip() for track in gpx.tracks
              if track.name and track.name.strip() and any(segment.points for segment in track.segments)),
@@ -69,7 +85,7 @@ def parse_gpx_folder(folder_path):
         for track in gpx.tracks:
             track_start = len(coords)
             for segment in track.segments:
-                for pt in segment.points:
+                for point_index, pt in enumerate(segment.points):
                     coords.append((pt.longitude, pt.latitude))
                     all_lats.append(pt.latitude)
                     all_lons.append(pt.longitude)
@@ -79,13 +95,19 @@ def parse_gpx_folder(folder_path):
                     point_elevations.append(pt.elevation)
 
                     if prev_pt is not None:
-                        d = pt.distance_2d(prev_pt)
-                        total_dist += d
+                        if is_transit_gap(prev_pt, pt, transit_gap_s, transit_min_m):
+                            transit_break_indices.append(len(coords) - 1)
+                            transit_legs.append([(prev_pt.longitude, prev_pt.latitude), (pt.longitude, pt.latitude)])
+                            transit_dist += pt.distance_2d(prev_pt)
+                            # gpxpy only counts time inside a segment, so only such gaps are subtracted.
+                            if point_index > 0:
+                                transit_time += (pt.time - prev_pt.time).total_seconds()
+                        else:
+                            total_dist += pt.distance_2d(prev_pt)
+                            prev_ele = prev_pt.elevation if prev_pt.elevation is not None else 0.0
+                            if ele > prev_ele:
+                                elev_gain += (ele - prev_ele)
                         distances.append(total_dist)
-                        
-                        prev_ele = prev_pt.elevation if prev_pt.elevation is not None else 0.0
-                        if ele > prev_ele:
-                            elev_gain += (ele - prev_ele)
                     prev_pt = pt
             if len(coords) > track_start:
                 track_end_indices.append(len(coords) - 1)
@@ -96,6 +118,7 @@ def parse_gpx_folder(folder_path):
         # Resample elevation to 150 evenly spaced points per ride for smooth plotting
         target_dists = np.linspace(0, total_dist, 150)
         resampled_ele = np.interp(target_dists, distances, elevations)
+        duration = gpx.get_duration() if start_time is not None else None
 
         activities.append({
             "date": start_time.strftime("%Y-%m-%d") if start_time else os.path.basename(filepath)[:10],
@@ -103,16 +126,34 @@ def parse_gpx_folder(folder_path):
             "sort_key": start_time.timestamp() if start_time else 0,
             "coords": coords,
             "track_end_indices": track_end_indices,
+            "transit_break_indices": transit_break_indices,
+            "transit_legs": transit_legs,
+            "transit_km": transit_dist / 1000.0,
             "distances_m": distances,
             "point_elevations": point_elevations,
             "elevations": resampled_ele,
             "distance_km": total_dist / 1000.0,
             "elev_gain_m": elev_gain,
-            "duration_s": gpx.get_duration() if start_time is not None else None,
+            "duration_s": duration - transit_time if duration is not None else None,
+            "start_time": start_time,
+            "end_time": time_bounds.end_time,
         })
 
     activities.sort(key=lambda x: x["sort_key"])
+    if transit_between_files:
+        add_transit_between_files(activities, transit_gap_s, transit_min_m)
     return activities, all_lats, all_lons
+
+def add_transit_between_files(activities, gap_s, min_m):
+    """Add a transit leg before a ride that starts far from where the previous ride that day ended."""
+    for previous, act in zip(activities, activities[1:]):
+        if previous["date"] != act["date"] or previous["end_time"] is None or act["start_time"] is None:
+            continue
+        (lon1, lat1), (lon2, lat2) = previous["coords"][-1], act["coords"][0]
+        distance = gpxpy.geo.distance(lat1, lon1, None, lat2, lon2, None)
+        if (act["start_time"] - previous["end_time"]).total_seconds() >= gap_s and distance >= min_m:
+            act["transit_legs"].insert(0, [(lon1, lat1), (lon2, lat2)])
+            act["transit_km"] += distance / 1000.0
 
 def validate_theme(background, transparent_theme):
     if background not in ("dark", "white", "transparent"):
@@ -153,9 +194,21 @@ def summarize(activities):
         elapsed = "unavailable"
     return {
         "distance_km": sum(act["distance_km"] for act in activities),
+        "transit_km": sum(act.get("transit_km", 0.0) for act in activities),
         "elev_gain_m": sum(act["elev_gain_m"] for act in activities),
         "elapsed": elapsed,
     }
+
+def summary_lines(totals):
+    """Totals cover cycling only; train and ferry distance is listed separately."""
+    lines = [
+        "ALL RIDES",
+        f"{totals['distance_km']:,.1f} km | +{totals['elev_gain_m']:,.0f} m",
+        f"Time: {totals['elapsed']}",
+    ]
+    if totals["transit_km"] > 0:
+        lines.append(f"Train/ferry: \N{ALMOST EQUAL TO} {totals['transit_km']:,.0f} km")
+    return lines
 
 def wheel_sectors(activities):
     """Return the gap between sectors and (activity, start, end) angles for rides with distance."""
@@ -174,28 +227,21 @@ def wheel_sectors(activities):
 def gradient_band(gradient):
     return next(index for index, (upper, _, _) in enumerate(GRADIENT_BANDS) if gradient < upper)
 
-def ride_profile(act):
-    """Resample a ride by distance with interpolated elevation and smoothed gradient."""
-    distances = np.asarray(act["distances_m"], dtype=float)
-    total = distances[-1]
-    if total <= 0:
-        return None
-    step = max(10.0, total / PROFILE_MAX_SAMPLES)
-    samples = np.append(np.arange(0, total, step), total)
-    unique_distances, first = np.unique(distances, return_index=True)
-    coords = np.asarray(act["coords"], dtype=float)
-    lons = np.interp(samples, unique_distances, coords[first, 0])
-    lats = np.interp(samples, unique_distances, coords[first, 1])
+def route_pieces(act):
+    """Inclusive index ranges of continuous riding, split at GPX track ends and train or ferry gaps."""
+    breaks = sorted(act.get("transit_break_indices", ()))
+    pieces = []
+    start = 0
+    for end in act["track_end_indices"]:
+        for index in breaks:
+            if start < index <= end:
+                pieces.append((start, index - 1))
+                start = index
+        pieces.append((start, end))
+        start = end + 1
+    return pieces
 
-    raw = np.array([np.nan if ele is None else ele for ele in act["point_elevations"]], dtype=float)
-    valid = ~np.isnan(raw)
-    has_elevation = bool(valid.any())
-    if has_elevation:
-        valid_distances, valid_first = np.unique(distances[valid], return_index=True)
-        elevations = np.interp(samples, valid_distances, raw[valid][valid_first])
-    else:
-        elevations = np.zeros_like(samples)
-
+def _smoothed_gradient(samples, elevations, step):
     window = max(1, round(PROFILE_SMOOTHING_M / step))
     padded = np.pad(elevations, (window // 2, window - 1 - window // 2), mode="edge")
     smoothed = np.convolve(padded, np.ones(window) / window, mode="valid")
@@ -204,24 +250,59 @@ def ride_profile(act):
     low = np.clip(index - half, 0, len(samples) - 1)
     high = np.clip(index + half, 0, len(samples) - 1)
     run = samples[high] - samples[low]
-    gradients = np.divide(
-        (smoothed[high] - smoothed[low]) * 100, run, out=np.zeros_like(run), where=run > 0,
-    )
-    return {
-        "distance_m": samples,
-        "elevation_m": elevations,
-        "gradient_pct": gradients,
-        "band": [gradient_band(gradient) for gradient in gradients],
-        "lat": lats,
-        "lon": lons,
-        "has_elevation": has_elevation,
-    }
+    return np.divide((smoothed[high] - smoothed[low]) * 100, run, out=np.zeros_like(run), where=run > 0)
+
+def _interp_unique(samples, distances, values):
+    unique_distances, first = np.unique(distances, return_index=True)
+    return np.interp(samples, unique_distances, values[first])
+
+def ride_profile(act):
+    """Resample a ride by distance with interpolated elevation and smoothed gradient.
+
+    Train and ferry gaps split the ride into pieces that are resampled separately, so the
+    elevation change across a gap is never treated as a climb.
+    """
+    distances = np.asarray(act["distances_m"], dtype=float)
+    total = distances[-1]
+    if total <= 0:
+        return None
+    step = max(10.0, total / PROFILE_MAX_SAMPLES)
+    coords = np.asarray(act["coords"], dtype=float)
+    raw = np.array([np.nan if ele is None else ele for ele in act["point_elevations"]], dtype=float)
+    valid = ~np.isnan(raw)
+    has_elevation = bool(valid.any())
+    breaks = sorted(act.get("transit_break_indices", ()))
+
+    parts = {key: [] for key in ("distance_m", "elevation_m", "gradient_pct", "lat", "lon")}
+    for start, stop in zip([0, *breaks], [*breaks, len(distances)]):
+        first_m, last_m = distances[start], distances[stop - 1]
+        if last_m <= first_m:
+            continue
+        piece = slice(start, stop)
+        samples = np.append(np.arange(first_m, last_m, step), last_m)
+        piece_valid = valid[piece]
+        if piece_valid.any():
+            elevations = _interp_unique(samples, distances[piece][piece_valid], raw[piece][piece_valid])
+        elif has_elevation:
+            elevations = _interp_unique(samples, distances[valid], raw[valid])
+        else:
+            elevations = np.zeros_like(samples)
+        parts["distance_m"].append(samples)
+        parts["elevation_m"].append(elevations)
+        parts["gradient_pct"].append(_smoothed_gradient(samples, elevations, step))
+        parts["lon"].append(_interp_unique(samples, distances[piece], coords[piece, 0]))
+        parts["lat"].append(_interp_unique(samples, distances[piece], coords[piece, 1]))
+
+    profile = {key: np.concatenate(values) for key, values in parts.items()}
+    profile["band"] = [gradient_band(gradient) for gradient in profile["gradient_pct"]]
+    profile["has_elevation"] = has_elevation
+    profile["transit_breaks_m"] = [float(distances[index]) for index in breaks]
+    return profile
 
 def split_tracks(act, min_spacing_m):
-    """Split a ride into per-track [lat, lon] polylines, keeping points at least min_spacing_m apart."""
+    """Split a ride into continuous [lat, lon] polylines, keeping points at least min_spacing_m apart."""
     tracks = []
-    start = 0
-    for end in act["track_end_indices"]:
+    for start, end in route_pieces(act):
         points = []
         last = None
         for index in range(start, end + 1):
@@ -231,8 +312,17 @@ def split_tracks(act, min_spacing_m):
                 points.append([round(lat, 6), round(lon, 6)])
                 last = distance
         tracks.append(points)
-        start = end + 1
     return tracks
+
+def _latlon(point):
+    lon, lat = point
+    return [round(lat, 6), round(lon, 6)]
+
+def track_ends(act):
+    return [_latlon(act["coords"][index]) for index in act["track_end_indices"]]
+
+def transit_lines(act):
+    return [[_latlon(start), _latlon(end)] for start, end in act.get("transit_legs", ())]
 
 def group_days(activities):
     days = {}
@@ -246,22 +336,24 @@ def _rounded(values, digits):
 def day_payload(day):
     profile = {key: [] for key in ("distance_km", "elevation_m", "gradient_pct", "band", "lat", "lon")}
     boundaries_km = []
+    transit_breaks_km = []
     rides = []
     has_elevation = False
     offset = 0.0
     for act in day["rides"]:
-        tracks = split_tracks(act, min_spacing_m=5)
         rides.append({
             "name": act["name"],
             "distance_km": round(act["distance_km"], 3),
             "elev_gain_m": round(act["elev_gain_m"], 1),
-            "tracks": tracks,
-            "ends": [track[-1] for track in tracks],
+            "tracks": split_tracks(act, min_spacing_m=5),
+            "ends": track_ends(act),
+            "transit": transit_lines(act),
         })
         ride = ride_profile(act)
         if ride is not None:
             if profile["distance_km"]:
                 boundaries_km.append(round(offset / 1000, 3))
+            transit_breaks_km += [round((offset + distance) / 1000, 3) for distance in ride["transit_breaks_m"]]
             profile["distance_km"] += _rounded((ride["distance_m"] + offset) / 1000, 3)
             profile["elevation_m"] += _rounded(ride["elevation_m"], 1)
             profile["gradient_pct"] += _rounded(ride["gradient_pct"], 1)
@@ -275,11 +367,13 @@ def day_payload(day):
         "date": day["date"],
         "color": day["color"],
         "distance_km": round(totals["distance_km"], 3),
+        "transit_km": round(totals["transit_km"], 3),
         "elev_gain_m": round(totals["elev_gain_m"], 1),
         "elapsed": totals["elapsed"],
         "rides": rides,
         "profile": profile,
         "ride_boundaries_km": boundaries_km,
+        "transit_breaks_km": transit_breaks_km,
         "has_elevation": has_elevation,
     }
 
@@ -295,11 +389,7 @@ def wheel_payload(activities, colors, day_page):
         "radii": {"base": R_ELE_BASE, "peak": R_ELE_MAX, "label": R_LABEL, "max": R_MAX},
         "summary_span": SUMMARY_SPAN,
         "gap": gap_rad,
-        "summary": [
-            "ALL RIDES",
-            f"{totals['distance_km']:,.1f} km | +{totals['elev_gain_m']:,.0f} m",
-            f"Time: {totals['elapsed']}",
-        ],
+        "summary": summary_lines(totals),
         "sectors": [{
             "date": act["date"],
             "color": act["color"],
@@ -313,6 +403,8 @@ def wheel_payload(activities, colors, day_page):
             "date": day["date"],
             "color": day["color"],
             "tracks": [track for act in day["rides"] for track in split_tracks(act, min_spacing_m=50)],
+            "ends": [end for act in day["rides"] for end in track_ends(act)],
+            "transit": [line for act in day["rides"] for line in transit_lines(act)],
         } for day in group_days(activities)],
     }
 
@@ -323,13 +415,14 @@ def render_page(template_name, payload):
             .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
     return template.replace("__WHEEL_DATA__", data)
 
-def create_interactive_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None):
+def create_interactive_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None,
+                             **transit_options):
     validate_theme(background, transparent_theme)
     wheel_path = Path(output_file if output_file is not None else Path(gpx_folder) / "activity_wheel.html").absolute()
     if wheel_path.suffix.lower() not in (".html", ".htm"):
         raise ValueError("Interactive output requires an HTML file.")
     day_path = wheel_path.with_name(f"{wheel_path.stem}_day{wheel_path.suffix}")
-    activities, _, _ = parse_gpx_folder(gpx_folder)
+    activities, _, _ = parse_gpx_folder(gpx_folder, **transit_options)
     if not activities:
         print("No valid GPX tracks found.")
         return
@@ -412,6 +505,8 @@ def fetch_center_map(activities, size_px=800, output_px=None):
     route_width = max(1, round(4 * output_px / size_px))
     dot_size = max(route_width + 1, round(6 * output_px / size_px))
     endpoints = []
+    transit_dot = max(2, round(route_width * 0.75))
+    transit_spacing = 2.5 * transit_dot
     for act in activities:
         pts = []
         for lon, lat in act["coords"]:
@@ -419,8 +514,20 @@ def fetch_center_map(activities, size_px=800, output_px=None):
             px = (tx * 256 - left) * pixel_scale
             py = (ty * 256 - top) * pixel_scale
             pts.append((px, py))
-        if len(pts) > 1:
-            draw.line(pts, fill=act["color"], width=route_width)
+        for start, end in route_pieces(act):
+            if end > start:
+                draw.line(pts[start:end + 1], fill=act["color"], width=route_width)
+        for leg in act.get("transit_legs", ()):
+            (x1, y1), (x2, y2) = [
+                ((tx * 256 - left) * pixel_scale, (ty * 256 - top) * pixel_scale)
+                for tx, ty in (deg2num(lat, lon, zoom) for lon, lat in leg)
+            ]
+            length = math.hypot(x2 - x1, y2 - y1)
+            for offset in np.arange(0, length + 1e-9, transit_spacing):
+                fraction = offset / length if length else 0
+                cx, cy = x1 + (x2 - x1) * fraction, y1 + (y2 - y1) * fraction
+                radius = transit_dot / 2
+                draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=act["color"])
         endpoints.extend(pts[index] for index in act["track_end_indices"])
 
     for px, py in endpoints:
@@ -456,12 +563,13 @@ def draw_arc_label(ax, text, theta, radius, span, reverse, color="#e0e6ed"):
         offset += width
     return True
 
-def create_activity_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None):
+def create_activity_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None,
+                          **transit_options):
     validate_theme(background, transparent_theme)
     output_path = Path(output_file if output_file is not None else Path(gpx_folder) / "activity_wheel.png").absolute()
     if background == "transparent" and output_path.suffix.lower() != ".png":
         raise ValueError("Transparent background requires a PNG output file.")
-    activities, _, _ = parse_gpx_folder(gpx_folder)
+    activities, _, _ = parse_gpx_folder(gpx_folder, **transit_options)
     if not activities:
         print("No valid GPX tracks found.")
         return
@@ -525,7 +633,7 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     )
     ax.text(
         0, (R_ELE_BASE + R_ELE_MAX) / 2,
-        f"ALL RIDES\n{totals['distance_km']:,.1f} km | +{totals['elev_gain_m']:,.0f} m\nTime: {totals['elapsed']}",
+        "\n".join(summary_lines(totals)),
         ha="center", va="center", fontsize=8.5, color=text_color,
     )
 
@@ -618,9 +726,25 @@ if __name__ == "__main__":
         "--interactive", action="store_true",
         help="write an interactive HTML activity wheel and a linked day view instead of a PNG",
     )
+    parser.add_argument(
+        "--transit-gap-min", type=float, default=TRANSIT_GAP_S / 60, metavar="MINUTES",
+        help="minimum recording pause treated as a train or ferry ride (default: 10)",
+    )
+    parser.add_argument(
+        "--transit-min-km", type=float, default=TRANSIT_MIN_M / 1000, metavar="KM",
+        help="minimum straight-line distance across a pause for a train or ferry ride (default: 1)",
+    )
+    parser.add_argument(
+        "--transit-between-files", action="store_true",
+        help="also draw a train or ferry ride between consecutive GPX files on the same date",
+    )
     args = parser.parse_args()
     if not os.path.isdir(args.gpx_folder):
         parser.error(f"GPX directory does not exist or is not a directory: {args.gpx_folder}")
+    if not args.transit_gap_min > 0:
+        parser.error("--transit-gap-min must be greater than 0.")
+    if not args.transit_min_km >= 0:
+        parser.error("--transit-min-km must not be negative.")
     output_suffix = Path(args.output).suffix.lower() if args.output else None
     if args.interactive and args.output and output_suffix not in (".html", ".htm"):
         parser.error("Interactive output requires an HTML file.")
@@ -630,6 +754,10 @@ if __name__ == "__main__":
         parser.error("--transparent-theme requires --background transparent.")
     create = create_interactive_wheel if args.interactive else create_activity_wheel
     try:
-        create(args.gpx_folder, args.output, args.background, args.transparent_theme)
+        create(
+            args.gpx_folder, args.output, args.background, args.transparent_theme,
+            transit_gap_s=args.transit_gap_min * 60, transit_min_m=args.transit_min_km * 1000,
+            transit_between_files=args.transit_between_files,
+        )
     except WheelSaveError as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")

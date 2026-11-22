@@ -213,10 +213,9 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     h, w, _ = map_img.shape
     patch = Circle((w / 2, h / 2), radius=min(w, h) / 2, transform=ax_map.transData)
     im.set_clip_path(patch)
-    ax_map.text(
-        0.5, 0.1, "\N{COPYRIGHT SIGN} OpenStreetMap contributors",
-        transform=ax_map.transAxes, ha="center", va="center", fontsize=7,
-        color="white", bbox={"facecolor": "#121417", "edgecolor": "none", "alpha": 0.8},
+    fig.text(
+        0.98, 0.02, "\N{COPYRIGHT SIGN} OpenStreetMap contributors",
+        ha="right", va="bottom", fontsize=7, color=text_color,
     )
 
     # Add a clean border ring around the map

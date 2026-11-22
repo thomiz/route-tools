@@ -6,7 +6,8 @@ Ride labels curve along the rim, and each ride sector is proportional to its
 share of the total distance. Zero-distance rides contribute to the totals but
 have no sector. The top sector shows total distance, elevation gain, and elapsed
 time (including pauses within recorded track segments). If only some rides
-have usable timing data, the time is marked partial.
+have usable timing data, the time is marked partial. OpenStreetMap attribution
+appears in the bottom-right corner of the image.
 
 Prerequisites
 

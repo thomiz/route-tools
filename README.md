@@ -25,10 +25,12 @@ The directory argument is optional and defaults to `./gpx_tracks`. The generated
 internet access to download map tiles from `tile.openstreetmap.org`.
 
 The default background is dark. Use `--background white` for a white image, or
-`--background transparent` for a transparent PNG with dark labels (best on a
-light background). The map and summary sector remain visible.
+`--background transparent` for a transparent PNG. For transparency, choose
+`--transparent-theme light` (the default, with dark labels for a light
+background) or `--transparent-theme dark` (with light labels for a dark
+background). The map and summary sector remain visible.
 ~~~powershell
-python src\generate-wheel.py "C:\path\to\gpx_tracks" --background transparent
+python src\generate-wheel.py "C:\path\to\gpx_tracks" --background transparent --transparent-theme dark
 ~~~
 
 If the default output cannot be written, use `--output` to choose another

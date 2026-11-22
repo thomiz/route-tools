@@ -167,9 +167,13 @@ def draw_arc_label(ax, text, theta, radius, span, reverse, color="#e0e6ed"):
         offset += width
     return True
 
-def create_activity_wheel(gpx_folder, output_file=None, background="dark"):
+def create_activity_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None):
     if background not in ("dark", "white", "transparent"):
         raise ValueError(f"Unknown background: {background}")
+    if transparent_theme is not None and transparent_theme not in ("light", "dark"):
+        raise ValueError(f"Unknown transparent theme: {transparent_theme}")
+    if transparent_theme is not None and background != "transparent":
+        raise ValueError("Transparent theme requires a transparent background.")
     output_path = Path(output_file if output_file is not None else Path(gpx_folder) / "activity_wheel.png").absolute()
     if background == "transparent" and output_path.suffix.lower() != ".png":
         raise ValueError("Transparent background requires a PNG output file.")
@@ -182,10 +186,10 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark"):
     map_img = fetch_center_map(activities, size_px=900)
 
     # 2. Setup figure and polar axis
-    dark = background == "dark"
-    background_color = "#121417" if dark else ("white" if background == "white" else "none")
+    dark = background == "dark" or (background == "transparent" and transparent_theme == "dark")
+    background_color = "#121417" if background == "dark" else ("white" if background == "white" else "none")
     text_color = "#e0e6ed" if dark else "#121417"
-    border_color = "#3a404a" if dark else "#6c757d"
+    border_color = "#aab4bd" if background == "transparent" and dark else ("#3a404a" if dark else "#6c757d")
     fig = plt.figure(figsize=(12, 12), facecolor=background_color)
     ax = fig.add_subplot(111, projection="polar", facecolor=background_color)
     ax.set_theta_zero_location("N")  # Start at 12 o'clock
@@ -268,7 +272,8 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark"):
         ax.plot(thetas, radii, color="#4cc9f0" if dark else "#087d8d", lw=1.8)
 
         # Add radial divider line
-        ax.plot([theta_start - gap_rad/2]*2, [R_ELE_BASE, R_ELE_MAX], color="#2b303a" if dark else border_color, lw=0.8, ls="--")
+        divider_color = "#2b303a" if background == "dark" else border_color
+        ax.plot([theta_start - gap_rad/2]*2, [R_ELE_BASE, R_ELE_MAX], color=divider_color, lw=0.8, ls="--")
 
         # Keep the date above the stats on both halves of the wheel.
         mid_theta = (theta_start + theta_end) / 2
@@ -307,14 +312,20 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--background", choices=("dark", "white", "transparent"), default="dark",
-        help="image background (default: dark; transparent works best on light backgrounds)",
+        help="image background (default: dark)",
+    )
+    parser.add_argument(
+        "--transparent-theme", choices=("light", "dark"),
+        help="intended background for a transparent PNG (default: light)",
     )
     args = parser.parse_args()
     if not os.path.isdir(args.gpx_folder):
         parser.error(f"GPX directory does not exist or is not a directory: {args.gpx_folder}")
     if args.background == "transparent" and args.output and Path(args.output).suffix.lower() != ".png":
         parser.error("Transparent background requires a PNG output file.")
+    if args.transparent_theme is not None and args.background != "transparent":
+        parser.error("--transparent-theme requires --background transparent.")
     try:
-        create_activity_wheel(args.gpx_folder, args.output, args.background)
+        create_activity_wheel(args.gpx_folder, args.output, args.background, args.transparent_theme)
     except WheelSaveError as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")

@@ -33,10 +33,11 @@ class WheelLayoutTests(unittest.TestCase):
              patch.object(wheel, "parse_gpx_folder", return_value=([activity], [], [])), \
              patch.object(wheel, "fetch_center_map", side_effect=wheel.requests.Timeout("tile timeout")):
             with self.assertRaisesRegex(wheel.requests.Timeout, "tile timeout"):
-                wheel.create_activity_wheel(folder)
+                wheel.create_activity_wheel(folder, Path(folder, "activity_wheel.png"))
         self.assertEqual(set(wheel.plt.get_fignums()), open_figures)
 
     def test_map_pixels_match_final_rendered_size(self):
+        savefig = Figure.savefig
         activity = {
             "date": "2026-01-01", "name": "Ride", "coords": [(0, 0), (1, 1)],
             "elevations": np.array([0, 1]), "distance_km": 1,
@@ -54,13 +55,18 @@ class WheelLayoutTests(unittest.TestCase):
             bounds = axis.get_window_extent()
             self.assertAlmostEqual(image.shape[1], bounds.width, delta=1)
             self.assertAlmostEqual(image.shape[0], bounds.height, delta=1)
+            kwargs["dpi"] = 60
+            savefig(figure, *args, **kwargs)
 
         with tempfile.TemporaryDirectory() as folder, \
+             patch.object(wheel, "DOCS_DIR", Path(folder) / "docs"), \
              patch.object(wheel, "parse_gpx_folder", return_value=([activity], [], [])), \
              patch.object(wheel, "fetch_center_map", side_effect=fake_map), \
              patch.object(Figure, "savefig", verify_map), \
              contextlib.redirect_stdout(io.StringIO()):
             wheel.create_activity_wheel(folder)
+            self.assertTrue(Path(folder, "docs", "activity_wheel.png").is_file())
+            self.assertFalse(Path(folder, "activity_wheel.png").exists())
 
     def test_higher_resolution_preserves_map_extent_and_route_positions(self):
         activity = {
@@ -135,7 +141,7 @@ class WheelLayoutTests(unittest.TestCase):
                  patch.object(ImageDraw.ImageDraw, "ellipse", autospec=True, side_effect=real_ellipse) as dots, \
                  patch.object(Figure, "savefig", verify_elevation_colors), \
                  contextlib.redirect_stdout(io.StringIO()):
-                wheel.create_activity_wheel(folder)
+                wheel.create_activity_wheel(folder, Path(folder, "activity_wheel.png"))
 
         line_calls = lines.call_args_list
         self.assertEqual([call.kwargs["fill"] for call in line_calls],
@@ -180,7 +186,7 @@ class WheelLayoutTests(unittest.TestCase):
              patch.object(wheel, "fetch_center_map", return_value=np.zeros((32, 32, 3))), \
              patch.object(Figure, "savefig", verify_layout), \
              contextlib.redirect_stdout(io.StringIO()):
-            wheel.create_activity_wheel(folder)
+            wheel.create_activity_wheel(folder, Path(folder, "activity_wheel.png"))
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ python src\generate-wheel.py "C:\path\to\gpx_tracks" --transit-gap-min 15 --tran
 
 Example output for a weeks trip to Scotland.
 
-![test](activity_wheel.png)
+![Example generated output](docs/activity_wheel.png)
 
 ## Prerequisites
 
@@ -77,7 +77,9 @@ python src\generate-wheel.py "C:\path\to\gpx_tracks"
 ### Arguments and switches
 
 The directory argument is optional and defaults to `./gpx_tracks`. The generated
-`activity_wheel.png` is saved in the GPX directory. The script needs
+`activity_wheel.png` is saved in the repository's `docs` folder, which is
+created automatically, regardless of the GPX folder or working directory.
+An explicit `--output` path overrides this default. The script needs
 internet access to download map tiles from `tile.openstreetmap.org`.
 
 The default background is dark. Use `--background white` for a white image, or
@@ -105,6 +107,8 @@ Use `--interactive` to write two linked HTML pages instead of the PNG:
 python src\generate-wheel.py "C:\path\to\gpx_tracks" --interactive
 ~~~
 
+Both pages are saved in the repository's `docs` folder by default.
+
 - `activity_wheel.html` is the interactive activity wheel. Click a ride's
   elevation profile, its label or its route on the centre map to open that day.
 - `activity_wheel_day.html` shows the selected day on a zoomable map, with an
@@ -118,6 +122,21 @@ With `--output`, the wheel page uses the given `.html` filename and the day
 page is saved next to it with `_day` added to the name. Keep the two files in
 the same folder. The pages load Leaflet and the map tiles from the internet
 when opened. `--background` and `--transparent-theme` also set the page colours.
+
+### Publish on GitHub Pages
+
+Generate the interactive pages, then commit and push the `docs` folder.
+In the repository's **Settings → Pages**, choose **Deploy from a branch**,
+select the publishing branch and the **/docs** folder, then save.
+Open `https://thomiz.github.io/route-tools/activity_wheel.html` once deployed.
+Keep both generated HTML files together so their navigation links work.
+
+These are static pages; no Python server is needed on your computer when
+viewing the published site. Internet access is still required for Leaflet and
+map tiles. Open the HTTPS site rather than local `file://` pages, which may
+have their OpenStreetMap tile requests blocked due to a missing Referer.
+Review the embedded route locations before publishing: the generated pages
+contain the route data and will be publicly accessible.
 
 ## How to use with Strava Data
 

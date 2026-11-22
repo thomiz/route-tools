@@ -120,7 +120,7 @@ class TransitTests(unittest.TestCase):
              patch.object(wheel.requests, "get", side_effect=AssertionError("no tile requests")):
             write_gpx(Path(folder, "trip.gpx"), train_day())
             with contextlib.redirect_stdout(io.StringIO()):
-                wheel.create_interactive_wheel(folder)
+                wheel.create_interactive_wheel(folder, Path(folder, "activity_wheel.html"))
             wheel_data = embedded_data(Path(folder, "activity_wheel.html").read_text(encoding="utf-8"))
             day_data = embedded_data(Path(folder, "activity_wheel_day.html").read_text(encoding="utf-8"))
         self.assertTrue(wheel_data["summary"][-1].startswith("Train/ferry"))

@@ -43,6 +43,7 @@ GRADIENT_WINDOW_M = 100
 TRANSIT_GAP_S = 600
 TRANSIT_MIN_M = 1000
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
 
 class WheelSaveError(OSError):
     pass
@@ -418,7 +419,7 @@ def render_page(template_name, payload):
 def create_interactive_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None,
                              **transit_options):
     validate_theme(background, transparent_theme)
-    wheel_path = Path(output_file if output_file is not None else Path(gpx_folder) / "activity_wheel.html").absolute()
+    wheel_path = Path(output_file if output_file is not None else DOCS_DIR / "activity_wheel.html").absolute()
     if wheel_path.suffix.lower() not in (".html", ".htm"):
         raise ValueError("Interactive output requires an HTML file.")
     day_path = wheel_path.with_name(f"{wheel_path.stem}_day{wheel_path.suffix}")
@@ -439,6 +440,8 @@ def create_interactive_wheel(gpx_folder, output_file=None, background="dark", tr
     })
     for path, html in ((wheel_path, wheel_html), (day_path, day_html)):
         try:
+            if output_file is None:
+                wheel_path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(html, encoding="utf-8")
         except OSError as exc:
             raise WheelSaveError(
@@ -566,7 +569,7 @@ def draw_arc_label(ax, text, theta, radius, span, reverse, color="#e0e6ed"):
 def create_activity_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None,
                           **transit_options):
     validate_theme(background, transparent_theme)
-    output_path = Path(output_file if output_file is not None else Path(gpx_folder) / "activity_wheel.png").absolute()
+    output_path = Path(output_file if output_file is not None else DOCS_DIR / "activity_wheel.png").absolute()
     if background == "transparent" and output_path.suffix.lower() != ".png":
         raise ValueError("Transparent background requires a PNG output file.")
     activities, _, _ = parse_gpx_folder(gpx_folder, **transit_options)
@@ -691,6 +694,8 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
         (right + padding) / dpi, (height - top + padding) / dpi,
     )
     try:
+        if output_file is None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output_path, dpi=dpi, bbox_inches=crop, facecolor=background_color)
     except OSError as exc:
         raise WheelSaveError(
@@ -712,7 +717,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-o", "--output",
         help="output path (default: activity_wheel.png, or activity_wheel.html with --interactive, "
-             "in the GPX directory)",
+             "in the repository's docs folder; explicit paths override this)",
     )
     parser.add_argument(
         "--background", choices=("dark", "white", "transparent"), default="dark",

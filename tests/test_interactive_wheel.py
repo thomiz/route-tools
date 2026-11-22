@@ -74,12 +74,14 @@ class InteractiveWheelTests(unittest.TestCase):
 
     def test_writes_linked_pages_with_safe_embedded_data(self):
         with tempfile.TemporaryDirectory() as folder, \
+             patch.object(wheel, "DOCS_DIR", Path(folder) / "docs"), \
              patch.object(wheel.requests, "get", side_effect=AssertionError("no tile requests")):
             self.write_rides(folder)
             with contextlib.redirect_stdout(io.StringIO()):
                 wheel.create_interactive_wheel(folder)
-            wheel_html = Path(folder, "activity_wheel.html").read_text(encoding="utf-8")
-            day_html = Path(folder, "activity_wheel_day.html").read_text(encoding="utf-8")
+            wheel_html = Path(folder, "docs", "activity_wheel.html").read_text(encoding="utf-8")
+            day_html = Path(folder, "docs", "activity_wheel_day.html").read_text(encoding="utf-8")
+            self.assertFalse(Path(folder, "activity_wheel.html").exists())
 
         self.assertNotIn("</script><b>", wheel_html + day_html)
         wheel_data = embedded_data(wheel_html)
@@ -98,6 +100,27 @@ class InteractiveWheelTests(unittest.TestCase):
         self.assertTrue(first["has_elevation"])
         self.assertFalse(second["has_elevation"])
         self.assertEqual(len(day_data["bands"]), len(wheel.GRADIENT_BANDS))
+
+    def test_explicit_output_keeps_both_pages_in_selected_folder(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(wheel, "DOCS_DIR", Path(folder) / "docs"):
+            self.write_rides(folder)
+            output = Path(folder, "custom.html")
+            with contextlib.redirect_stdout(io.StringIO()):
+                wheel.create_interactive_wheel(folder, output)
+            wheel_data = embedded_data(output.read_text(encoding="utf-8"))
+            day_data = embedded_data(Path(folder, "custom_day.html").read_text(encoding="utf-8"))
+            self.assertEqual(wheel_data["day_page"], "custom_day.html")
+            self.assertEqual(day_data["wheel_page"], "custom.html")
+            self.assertFalse(wheel.DOCS_DIR.exists())
+
+    def test_docs_creation_error_is_reported(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(wheel, "DOCS_DIR", Path(folder) / "docs"):
+            self.write_rides(folder)
+            wheel.DOCS_DIR.write_text("not a directory", encoding="utf-8")
+            with self.assertRaisesRegex(wheel.WheelSaveError, "Could not save"):
+                wheel.create_interactive_wheel(folder)
 
     def test_cli_rejects_non_html_interactive_output(self):
         with tempfile.TemporaryDirectory() as folder, \

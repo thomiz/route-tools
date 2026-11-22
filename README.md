@@ -21,7 +21,7 @@ displayed date use the same color. When a ride has no recorded start time, its
 displayed date uses the first 10 characters of its filename. Black dots mark
 the end of each GPX track.
 The map uses higher-detail tiles and is rendered at the output resolution
-while retaining the same geographic coverage.
+by default, while retaining the same geographic coverage.
 
 ### Train and ferry rides
 
@@ -81,6 +81,23 @@ The directory argument is optional and defaults to `./gpx_tracks`. The generated
 created automatically, regardless of the GPX folder or working directory.
 An explicit `--output` path overrides this default. The script needs
 internet access to download map tiles from `tile.openstreetmap.org`.
+
+Use `--map-scale PERCENT` from **100 to 400 percent** (default: **100**) to
+make basemap labels larger by using less-detailed map tiles. At 200%, tiles
+come from one zoom level lower, making place labels approximately twice as
+large; 400% uses two levels lower. Intermediate values are rounded to the
+nearest tile zoom-level scale because tile zoom levels are discrete.
+
+The basemap is resized to the final map resolution **before** drawing GPS
+tracks, black end dots and dotted transit connections. These overlays are
+always drawn at native output resolution: their positions, widths and sizes
+do not change with `--map-scale`. The final PNG size, geographic coverage,
+layout and information text resolution also stay unchanged.
+This option is not available with `--interactive`.
+
+~~~powershell
+python src\generate-wheel.py "C:\path\to\gpx_tracks" --map-scale 200
+~~~
 
 The default background is dark. Use `--background white` for a white image, or
 `--background transparent` for a transparent PNG. For transparency, choose

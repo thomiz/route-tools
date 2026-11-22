@@ -149,6 +149,20 @@ class InteractiveWheelTests(unittest.TestCase):
                 runpy_main()
         self.assertEqual(raised.exception.code, 2)
 
+    def test_cli_rejects_invalid_or_interactive_map_scale(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for options in (
+                ["--map-scale", "99"], ["--map-scale", "401"], ["--map-scale", "nan"],
+                ["--interactive", "--map-scale", "200"],
+            ):
+                with self.subTest(options=options), \
+                     patch.object(sys, "argv", ["generate-wheel.py", folder, *options]), \
+                     contextlib.redirect_stderr(io.StringIO()) as errors:
+                    with self.assertRaises(SystemExit) as raised:
+                        runpy_main()
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertIn("--map-scale", errors.getvalue())
+
 
 def runpy_main():
     import runpy

@@ -455,7 +455,9 @@ def create_interactive_wheel(gpx_folder, output_file=None, background="dark", tr
     print(f"Saved interactive activity wheel to {wheel_path}")
     print(f"Saved interactive day view to {day_path}")
 
-def fetch_center_map(activities, size_px=800, output_px=None):
+def fetch_center_map(activities, size_px=800, output_px=None, *, map_scale=100):
+    if not 100 <= map_scale <= 400:
+        raise ValueError("Map scale must be between 100 and 400 percent.")
     all_lons = [pt[0] for act in activities for pt in act["coords"]]
     all_lats = [pt[1] for act in activities for pt in act["coords"]]
     
@@ -485,11 +487,16 @@ def fetch_center_map(activities, size_px=800, output_px=None):
     zoom += zoom_increase
     source_size = size_px * 2 ** zoom_increase
     cx, cy = deg2num(center_lat, center_lon, zoom)
-    left = math.floor(cx * 256 - source_size / 2)
-    top = math.floor(cy * 256 - source_size / 2)
-    first_x, first_y = left // 256, top // 256
-    last_x = (left + source_size - 1) // 256
-    last_y = (top + source_size - 1) // 256
+    zoom_reduction = min(zoom, round(math.log2(map_scale / 100)))
+    source_scale = 2 ** zoom_reduction
+    # Anchor the lower-detail crop to the native crop so route positions stay identical.
+    left = math.floor(cx * 256 - source_size / 2) / source_scale
+    top = math.floor(cy * 256 - source_size / 2) / source_scale
+    source_size /= source_scale
+    zoom -= zoom_reduction
+    first_x, first_y = math.floor(left / 256), math.floor(top / 256)
+    last_x = math.ceil((left + source_size) / 256) - 1
+    last_y = math.ceil((top + source_size) / 256) - 1
     canvas = Image.new("RGB", ((last_x - first_x + 1) * 256, (last_y - first_y + 1) * 256))
     headers = {"User-Agent": "GPXActivityWheel/1.0 (local-script)"}
 
@@ -502,9 +509,13 @@ def fetch_center_map(activities, size_px=800, output_px=None):
             canvas.paste(tile, ((tx - first_x) * 256, (ty - first_y) * 256))
 
     crop_left, crop_top = left - first_x * 256, top - first_y * 256
-    cropped = canvas.crop((crop_left, crop_top, crop_left + source_size, crop_top + source_size))
-    if source_size != output_px:
-        cropped = cropped.resize((output_px, output_px), Image.Resampling.LANCZOS)
+    crop_box = (crop_left, crop_top, crop_left + source_size, crop_top + source_size)
+    if zoom_reduction:
+        cropped = canvas.resize((output_px, output_px), Image.Resampling.LANCZOS, box=crop_box)
+    else:
+        cropped = canvas.crop(crop_box)
+        if source_size != output_px:
+            cropped = cropped.resize((output_px, output_px), Image.Resampling.LANCZOS)
 
     # Draw GPX tracks onto the cropped map
     draw = ImageDraw.Draw(cropped)
@@ -571,8 +582,10 @@ def draw_arc_label(ax, text, theta, radius, span, reverse, color="#e0e6ed"):
     return True
 
 def create_activity_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None,
-                          **transit_options):
+                          *, map_scale=100, **transit_options):
     validate_theme(background, transparent_theme)
+    if not 100 <= map_scale <= 400:
+        raise ValueError("Map scale must be between 100 and 400 percent.")
     output_path = Path(output_file if output_file is not None else DOCS_DIR / "activity_wheel.png").absolute()
     if background == "transparent" and output_path.suffix.lower() != ".png":
         raise ValueError("Transparent background requires a PNG output file.")
@@ -613,7 +626,7 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     map_pixels = math.ceil(ax_map.bbox.width)
     map_img = None
     try:
-        map_img = fetch_center_map(activities, size_px=900, output_px=map_pixels)
+        map_img = fetch_center_map(activities, size_px=900, output_px=map_pixels, map_scale=map_scale)
     finally:
         if map_img is None:
             plt.close(fig)
@@ -736,6 +749,11 @@ if __name__ == "__main__":
         help="write an interactive HTML activity wheel and a linked day view instead of a PNG",
     )
     parser.add_argument(
+        "--map-scale", type=float, metavar="PERCENT",
+        help="basemap label scale, 100-400 percent; larger means less detail "
+             "(default: 100; PNG only; GPS tracks stay at output resolution)",
+    )
+    parser.add_argument(
         "--transit-gap-min", type=float, default=TRANSIT_GAP_S / 60, metavar="MINUTES",
         help="minimum recording pause treated as a train or ferry ride (default: 10)",
     )
@@ -754,6 +772,10 @@ if __name__ == "__main__":
         parser.error("--transit-gap-min must be greater than 0.")
     if not args.transit_min_km >= 0:
         parser.error("--transit-min-km must not be negative.")
+    if args.map_scale is not None and not 100 <= args.map_scale <= 400:
+        parser.error("--map-scale must be between 100 and 400 percent.")
+    if args.interactive and args.map_scale is not None:
+        parser.error("--map-scale is only available for PNG image generation.")
     output_suffix = Path(args.output).suffix.lower() if args.output else None
     if args.interactive and args.output and output_suffix not in (".html", ".htm"):
         parser.error("Interactive output requires an HTML file.")
@@ -761,12 +783,18 @@ if __name__ == "__main__":
         parser.error("Transparent background requires a PNG output file.")
     if args.transparent_theme is not None and args.background != "transparent":
         parser.error("--transparent-theme requires --background transparent.")
+    options = {
+        "transit_gap_s": args.transit_gap_min * 60,
+        "transit_min_m": args.transit_min_km * 1000,
+        "transit_between_files": args.transit_between_files,
+    }
+    if not args.interactive:
+        options["map_scale"] = args.map_scale if args.map_scale is not None else 100
     create = create_interactive_wheel if args.interactive else create_activity_wheel
     try:
         create(
             args.gpx_folder, args.output, args.background, args.transparent_theme,
-            transit_gap_s=args.transit_gap_min * 60, transit_min_m=args.transit_min_km * 1000,
-            transit_between_files=args.transit_between_files,
+            **options,
         )
     except WheelSaveError as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")

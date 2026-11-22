@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -44,7 +45,7 @@ class WheelLayoutTests(unittest.TestCase):
             "elev_gain_m": 1, "duration_s": None,
         }
 
-        def fake_map(activities, size_px=800, output_px=None):
+        def fake_map(activities, size_px=800, output_px=None, map_scale=100):
             size = output_px if output_px is not None else size_px
             return np.zeros((size, size, 3), dtype=np.uint8)
 
@@ -93,6 +94,91 @@ class WheelLayoutTests(unittest.TestCase):
         self.assertEqual(high_res.shape, (1576, 1576, 3))
         self.assertEqual(high_zoom, base_zoom + 1)
         np.testing.assert_allclose(base_points / 900, high_points / 1576, atol=1 / 900)
+
+    def test_map_scale_preserves_native_map_and_infographic_resolution(self):
+        savefig = Figure.savefig
+        activity = {
+            "date": "2026-01-01", "name": "Ride", "coords": [(0, 0), (1, 1)],
+            "elevations": np.array([0, 1]), "distance_km": 1,
+            "elev_gain_m": 1, "duration_s": None,
+        }
+        image_sizes = []
+
+        def fake_map(activities, size_px, output_px, map_scale):
+            return np.full((output_px, output_px, 3), 127, dtype=np.uint8)
+
+        def verify_scale(figure, path, **kwargs):
+            axis = figure.axes[1]
+            map_pixels = math.ceil(axis.bbox.width)
+            self.assertEqual(fetch.call_args.kwargs["output_px"], map_pixels)
+            self.assertEqual(fetch.call_args.kwargs["map_scale"], scale)
+            self.assertEqual(axis.images[0].get_array().shape, (map_pixels, map_pixels, 3))
+            self.assertTrue(np.all(axis.images[0].get_array() == 127))
+            savefig(figure, path, **kwargs)
+            with Image.open(path) as image:
+                image_sizes.append(image.size)
+
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(wheel, "parse_gpx_folder", return_value=([activity], [], [])) as parse, \
+             patch.object(wheel, "fetch_center_map", side_effect=fake_map) as fetch, \
+             patch.object(Figure, "savefig", verify_scale), \
+             contextlib.redirect_stdout(io.StringIO()):
+            for scale in (100, 150.5, 400):
+                with self.subTest(scale=scale):
+                    wheel.create_activity_wheel(folder, Path(folder, "scaled.png"), map_scale=scale)
+                    self.assertNotIn("map_scale", parse.call_args.kwargs)
+        for size in image_sizes[1:]:
+            self.assertEqual(size, image_sizes[0])
+
+    def test_map_scale_enlarges_basemap_before_drawing_native_resolution_tracks(self):
+        activity = {
+            "coords": [(0.0, 51.0), (0.03, 51.01)],
+            "track_end_indices": [1], "color": "red",
+            "transit_legs": [[(0.0, 51.0), (0.03, 51.01)]],
+        }
+        with io.BytesIO() as data:
+            tile = Image.new("RGB", (256, 256), "white")
+            ImageDraw.Draw(tile).rectangle((0, 60, 255, 75), fill="black")
+            tile.save(data, format="PNG")
+            response = Response()
+            response.status_code = 200
+            response._content = data.getvalue()
+        line = ImageDraw.ImageDraw.line
+        ellipse = ImageDraw.ImageDraw.ellipse
+        results = []
+        for scale in (100, 200, 400):
+            with self.subTest(scale=scale), \
+                 patch.object(wheel.requests, "get", return_value=response) as requests, \
+                 patch.object(ImageDraw.ImageDraw, "line", autospec=True, side_effect=line) as lines, \
+                 patch.object(ImageDraw.ImageDraw, "ellipse", autospec=True, side_effect=ellipse) as dots:
+                image = wheel.fetch_center_map([activity], size_px=900, output_px=1576, map_scale=scale)
+                self.assertEqual(image.shape, (1576, 1576, 3))
+                self.assertEqual(lines.call_args.args[0]._image.size, (1576, 1576))
+                self.assertTrue(all(call.args[0]._image.size == (1576, 1576) for call in dots.call_args_list))
+                mask = image[:, 0, 0] < 100
+                edges = np.flatnonzero(np.diff(np.r_[False, mask, False]))
+                stripe_width = max(edges[1::2] - edges[::2])
+                dot_boxes = np.array([call.args[1] for call in dots.call_args_list])
+                results.append((
+                    int(requests.call_args.args[0].split("/")[-3]),
+                    np.array(lines.call_args.args[1]), lines.call_args.kwargs["width"],
+                    dot_boxes, stripe_width,
+                ))
+        base_zoom, base_points, base_width, base_dots, base_stripe = results[0]
+        for steps, (zoom, points, width, dots, stripe) in enumerate(results[1:], 1):
+            self.assertEqual(zoom, base_zoom - steps)
+            np.testing.assert_allclose(points, base_points, atol=1e-8)
+            self.assertEqual(width, base_width)
+            np.testing.assert_allclose(dots, base_dots, atol=1e-8)
+            self.assertAlmostEqual(stripe, base_stripe * 2 ** steps, delta=2)
+
+    def test_invalid_map_scale_is_rejected_before_parsing_gpx(self):
+        with patch.object(wheel, "parse_gpx_folder") as parse:
+            for scale in (99, 401, float("nan"), float("inf")):
+                with self.subTest(scale=scale), \
+                     self.assertRaisesRegex(ValueError, "between 100 and 400"):
+                    wheel.create_activity_wheel("unused", map_scale=scale)
+            parse.assert_not_called()
 
     def test_daily_route_colors_match_elevations_and_mark_track_ends(self):
         days = [0, 0, 1, 2, 3, 4, 5, 6, 7]

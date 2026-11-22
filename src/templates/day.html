@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Day view</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--background); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.25rem;
+    padding: 0.6rem 1rem; border-bottom: 1px solid var(--border);
+  }
+  header a { color: inherit; text-decoration: none; }
+  header a:hover, header a:focus-visible { text-decoration: underline; }
+  #back { font-weight: 600; }
+  #title { margin: 0; font-size: 1.25rem; display: flex; align-items: center; gap: 0.5rem; }
+  #swatch { width: 0.9rem; height: 0.9rem; border-radius: 50%; display: inline-block; }
+  #stats { margin: 0; opacity: 0.9; flex: 1 1 18rem; }
+  nav { display: flex; gap: 1rem; }
+  nav a[aria-disabled="true"] { opacity: 0.35; pointer-events: none; }
+  #map { flex: 1 1 auto; min-height: 280px; }
+  #profile-panel { position: relative; height: 260px; padding: 0.4rem 1rem 0.6rem; box-sizing: border-box; display: flex; flex-direction: column; }
+  #legend { list-style: none; display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; margin: 0 0 0.3rem; padding: 0; font-size: 0.8rem; }
+  #legend span { display: inline-block; width: 0.8rem; height: 0.8rem; margin-right: 0.3rem; vertical-align: -0.1rem; border-radius: 2px; }
+  #profile { flex: 1 1 auto; width: 100%; min-height: 0; display: block; outline: none; }
+  #profile:focus-visible { box-shadow: 0 0 0 2px var(--border); }
+  #profile text { fill: var(--text); font-size: 11px; }
+  #message { margin: auto; opacity: 0.8; }
+  #tooltip {
+    position: absolute; pointer-events: none; white-space: nowrap;
+    background: var(--summary); color: var(--text); border-left: 4px solid; border-radius: 3px;
+    padding: 0.25rem 0.5rem; font-size: 0.8rem; transform: translateX(-50%);
+  }
+</style>
+</head>
+<body>
+<header>
+  <a id="back" href="#">&larr; Activity wheel</a>
+  <h1 id="title"><span id="swatch" aria-hidden="true"></span><span id="date"></span></h1>
+  <p id="stats"></p>
+  <nav aria-label="Days">
+    <a id="previous" href="#">&lsaquo; Previous day</a>
+    <a id="next" href="#">Next day &rsaquo;</a>
+  </nav>
+</header>
+<div id="map" aria-label="Zoomable map of the selected day"></div>
+<section id="profile-panel" aria-label="Elevation profile">
+  <ul id="legend"></ul>
+  <svg id="profile" tabindex="0" role="img" aria-label="Elevation profile coloured by gradient"></svg>
+  <p id="message" hidden></p>
+  <div id="tooltip" hidden></div>
+</section>
+<script>const DATA = __WHEEL_DATA__;</script>
+<script>
+(() => {
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const theme = DATA.theme;
+  for (const [name, value] of Object.entries(theme)) {
+    document.documentElement.style.setProperty(`--${name}`, value);
+  }
+  const $ = id => document.getElementById(id);
+  $("back").href = DATA.wheel_page;
+
+  for (const band of DATA.bands) {
+    const item = document.createElement("li");
+    const swatch = document.createElement("span");
+    swatch.style.background = band.color;
+    item.append(swatch, band.label);
+    $("legend").appendChild(item);
+  }
+
+  const map = L.map("map", {zoomSnap: 0.25});
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+  const otherDays = L.featureGroup().addTo(map);
+  const selectedDay = L.featureGroup().addTo(map);
+  const hoverMarker = L.circleMarker([0, 0], {radius: 6, color: "white", weight: 2, fillOpacity: 1, interactive: false});
+
+  const svg = $("profile");
+  const tooltip = $("tooltip");
+  let current = null;
+  let chart = null;
+  let hoverIndex = null;
+
+  const dayHash = date => `#${encodeURIComponent(date)}`;
+
+  function element(name, attributes = {}, parent = svg) {
+    const node = document.createElementNS(SVG_NS, name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+    parent.appendChild(node);
+    return node;
+  }
+
+  function niceTicks(min, max, count) {
+    const raw = (max - min) / count;
+    const magnitude = 10 ** Math.floor(Math.log10(raw));
+    const step = [1, 2, 5, 10].map(m => m * magnitude).find(s => s >= raw);
+    const ticks = [];
+    for (let value = Math.ceil(min / step) * step; value <= max + 1e-9; value += step) ticks.push(value);
+    return ticks;
+  }
+
+  function setNav(link, day) {
+    if (day) {
+      link.href = dayHash(day.date);
+      link.removeAttribute("aria-disabled");
+      link.title = day.date;
+    } else {
+      link.removeAttribute("href");
+      link.setAttribute("aria-disabled", "true");
+      link.removeAttribute("title");
+    }
+  }
+
+  function drawRoutes(day) {
+    otherDays.clearLayers();
+    selectedDay.clearLayers();
+    for (const other of DATA.days) {
+      if (other === day) continue;
+      for (const ride of other.rides) {
+        for (const track of ride.tracks.filter(t => t.length > 1)) {
+          L.polyline(track, {color: "#7a7f87", weight: 3, opacity: 0.5})
+            .bindTooltip(other.date, {sticky: true})
+            .on("click", () => { window.location.hash = dayHash(other.date); })
+            .addTo(otherDays);
+        }
+      }
+    }
+    for (const ride of day.rides) {
+      for (const track of ride.tracks.filter(t => t.length > 1)) {
+        L.polyline(track, {color: day.color, weight: 4, opacity: 1})
+          .on("mousemove", event => showHover(nearestSample(event.latlng)))
+          .on("mouseout", hideHover)
+          .addTo(selectedDay);
+      }
+      for (const end of ride.ends) {
+        L.circleMarker(end, {radius: 3, stroke: false, fillColor: "black", fillOpacity: 1, interactive: false})
+          .addTo(selectedDay);
+      }
+    }
+    if (selectedDay.getLayers().length) {
+      map.fitBounds(selectedDay.getBounds(), {padding: [30, 30], maxZoom: 16});
+    }
+  }
+
+  function nearestSample(latlng) {
+    const {lat, lon} = current.profile;
+    const scale = Math.cos(latlng.lat * Math.PI / 180) ** 2;
+    let best = 0;
+    let bestDistance = Infinity;
+    for (let i = 0; i < lat.length; i++) {
+      const distance = (lat[i] - latlng.lat) ** 2 + (lon[i] - latlng.lng) ** 2 * scale;
+      if (distance < bestDistance) { best = i; bestDistance = distance; }
+    }
+    return lat.length ? best : null;
+  }
+
+  function drawProfile() {
+    svg.replaceChildren();
+    chart = null;
+    const profile = current.profile;
+    const message = $("message");
+    const empty = !profile.distance_km.length ? "No distance was recorded on this day."
+      : !current.has_elevation ? "The GPX files for this day contain no elevation data." : null;
+    svg.hidden = Boolean(empty);
+    message.hidden = !empty;
+    message.textContent = empty || "";
+    if (empty) return;
+
+    const width = svg.clientWidth;
+    const height = svg.clientHeight;
+    const margin = {left: 52, right: 14, top: 8, bottom: 26};
+    const distances = profile.distance_km;
+    const elevations = profile.elevation_m;
+    const maxDistance = Math.max(distances[distances.length - 1], 0.001);
+    const low = Math.min(...elevations);
+    const high = Math.max(...elevations);
+    const span = Math.max(high - low, 20);
+    const minElevation = low - span * 0.08;
+    const maxElevation = high + span * 0.08;
+    const x = d => margin.left + d / maxDistance * (width - margin.left - margin.right);
+    const y = e => margin.top + (1 - (e - minElevation) / (maxElevation - minElevation)) * (height - margin.top - margin.bottom);
+    const baseline = y(minElevation);
+    chart = {x, y, margin, width, height, maxDistance};
+
+    for (const tick of niceTicks(minElevation, maxElevation, 4)) {
+      element("line", {x1: margin.left, x2: width - margin.right, y1: y(tick), y2: y(tick), stroke: theme.border, "stroke-width": 0.6});
+      element("text", {x: margin.left - 6, y: y(tick), "text-anchor": "end", "dominant-baseline": "central"}).textContent = `${tick} m`;
+    }
+    for (const tick of niceTicks(0, maxDistance, Math.max(2, Math.floor(width / 90)))) {
+      element("line", {x1: x(tick), x2: x(tick), y1: baseline, y2: baseline + 4, stroke: theme.border});
+      element("text", {x: x(tick), y: baseline + 16, "text-anchor": "middle"}).textContent = `${tick} km`;
+    }
+
+    // Fill each run of samples sharing a gradient band; one path per band keeps the DOM small.
+    const paths = DATA.bands.map(() => []);
+    let runStart = 0;
+    for (let i = 1; i <= distances.length - 1; i++) {
+      if (i === distances.length - 1 || profile.band[i] !== profile.band[runStart]) {
+        const top = [];
+        for (let j = runStart; j <= i; j++) top.push(`${x(distances[j]).toFixed(1)} ${y(elevations[j]).toFixed(1)}`);
+        paths[profile.band[runStart]].push(
+          `M${top.join("L")}L${x(distances[i]).toFixed(1)} ${baseline}L${x(distances[runStart]).toFixed(1)} ${baseline}Z`);
+        runStart = i;
+      }
+    }
+    paths.forEach((parts, band) => {
+      if (parts.length) element("path", {d: parts.join(""), fill: DATA.bands[band].color, "fill-opacity": 0.85});
+    });
+    const outline = distances.map((d, i) => `${x(d).toFixed(1)} ${y(elevations[i]).toFixed(1)}`);
+    element("path", {d: `M${outline.join("L")}`, fill: "none", stroke: current.color, "stroke-width": 2});
+    for (const boundary of current.ride_boundaries_km) {
+      element("line", {x1: x(boundary), x2: x(boundary), y1: margin.top, y2: baseline,
+        stroke: theme.text, "stroke-width": 1, "stroke-dasharray": "4 3", opacity: 0.6});
+    }
+
+    chart.cursor = element("line", {y1: margin.top, y2: baseline, stroke: theme.text, "stroke-width": 1, visibility: "hidden"});
+    chart.dot = element("circle", {r: 4.5, fill: "white", stroke: current.color, "stroke-width": 2, visibility: "hidden"});
+    const overlay = element("rect", {
+      x: margin.left, y: margin.top, width: Math.max(width - margin.left - margin.right, 0),
+      height: Math.max(baseline - margin.top, 0), fill: "transparent",
+    });
+    overlay.addEventListener("pointermove", event => {
+      const box = svg.getBoundingClientRect();
+      const distance = (event.clientX - box.left - margin.left) / (width - margin.left - margin.right) * maxDistance;
+      showHover(indexAtDistance(distance));
+    });
+    overlay.addEventListener("pointerleave", hideHover);
+  }
+
+  function indexAtDistance(distance) {
+    const distances = current.profile.distance_km;
+    let low = 0;
+    let high = distances.length - 1;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (distances[middle] < distance) low = middle + 1; else high = middle;
+    }
+    return low > 0 && distance - distances[low - 1] < distances[low] - distance ? low - 1 : low;
+  }
+
+  function showHover(index) {
+    if (index === null || !chart) return;
+    hoverIndex = index;
+    const profile = current.profile;
+    const px = chart.x(profile.distance_km[index]);
+    const py = chart.y(profile.elevation_m[index]);
+    chart.cursor.setAttribute("x1", px);
+    chart.cursor.setAttribute("x2", px);
+    chart.cursor.setAttribute("visibility", "visible");
+    chart.dot.setAttribute("cx", px);
+    chart.dot.setAttribute("cy", py);
+    chart.dot.setAttribute("visibility", "visible");
+    const gradient = profile.gradient_pct[index];
+    tooltip.textContent = `${profile.distance_km[index].toFixed(1)} km · ${Math.round(profile.elevation_m[index])} m · ` +
+      `${gradient > 0 ? "+" : ""}${gradient.toFixed(1)} %`;
+    tooltip.style.borderLeftColor = DATA.bands[profile.band[index]].color;
+    tooltip.hidden = false;
+    const panel = $("profile-panel").getBoundingClientRect();
+    const box = svg.getBoundingClientRect();
+    const left = box.left - panel.left;
+    const half = tooltip.offsetWidth / 2;
+    tooltip.style.left = `${Math.min(Math.max(left + px, left + half), left + chart.width - half)}px`;
+    tooltip.style.top = `${box.top - panel.top + chart.margin.top}px`;
+    hoverMarker.setLatLng([profile.lat[index], profile.lon[index]]).setStyle({fillColor: current.color});
+    if (!map.hasLayer(hoverMarker)) hoverMarker.addTo(map);
+  }
+
+  function hideHover() {
+    hoverIndex = null;
+    tooltip.hidden = true;
+    if (chart) {
+      chart.cursor.setAttribute("visibility", "hidden");
+      chart.dot.setAttribute("visibility", "hidden");
+    }
+    hoverMarker.remove();
+  }
+
+  svg.addEventListener("keydown", event => {
+    const count = current.profile.distance_km.length;
+    if (!count || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const step = Math.max(1, Math.round(count / 100));
+    const start = hoverIndex === null ? 0 : hoverIndex;
+    const next = {ArrowLeft: start - step, ArrowRight: start + step, Home: 0, End: count - 1}[event.key];
+    showHover(Math.min(Math.max(next, 0), count - 1));
+  });
+  svg.addEventListener("blur", hideHover);
+
+  function select() {
+    let date = null;
+    try { date = decodeURIComponent(window.location.hash.slice(1)); } catch (error) { date = null; }
+    const index = Math.max(0, DATA.days.findIndex(day => day.date === date));
+    const day = DATA.days[index];
+    if (date !== day.date) history.replaceState(null, "", dayHash(day.date));
+    current = day;
+    hideHover();
+
+    document.title = `${day.date} – Day view`;
+    $("date").textContent = day.date;
+    $("swatch").style.background = day.color;
+    const names = day.rides.map(ride => ride.name).join(", ");
+    $("stats").textContent = `${day.distance_km.toFixed(1)} km · +${Math.round(day.elev_gain_m)} m · ` +
+      `${day.elapsed} · ${day.rides.length === 1 ? "Ride" : "Rides"}: ${names}`;
+    setNav($("previous"), DATA.days[index - 1]);
+    setNav($("next"), DATA.days[index + 1]);
+    drawRoutes(day);
+    drawProfile();
+  }
+
+  window.addEventListener("hashchange", select);
+  new ResizeObserver(() => { if (current) { hideHover(); drawProfile(); } }).observe($("profile-panel"));
+  select();
+})();
+</script>
+</body>
+</html>

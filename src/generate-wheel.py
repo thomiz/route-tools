@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import requests
 from PIL import Image, ImageChops, ImageDraw
@@ -17,6 +18,28 @@ from matplotlib.transforms import Bbox
 
 DAY_COLORS = ("red", "orange", "yellow", "green", "blue", "indigo", "violet")
 
+# Radial layout of the wheel, in polar-axis units
+R_ELE_BASE = 1.06    # Inner ring where elevation starts
+R_ELE_MAX = 1.45     # Outer limit for highest elevation peak
+R_LABEL = 1.54       # Radius of the inner label line
+R_MAX = 1.85         # Outer edge of the wheel
+SUMMARY_SPAN = math.radians(46)
+
+# Upper bound (exclusive), color and legend label of each gradient band
+GRADIENT_BANDS = (
+    (-6, "#1d4e89", "below -6 %"),
+    (-2, "#6fa8dc", "-6 to -2 %"),
+    (2, "#4caf50", "-2 to 2 %"),
+    (5, "#f2c94c", "2 to 5 %"),
+    (8, "#f2994a", "5 to 8 %"),
+    (12, "#d64545", "8 to 12 %"),
+    (math.inf, "#7b2d8b", "above 12 %"),
+)
+PROFILE_MAX_SAMPLES = 2000
+PROFILE_SMOOTHING_M = 80
+GRADIENT_WINDOW_M = 100
+TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+
 class WheelSaveError(OSError):
     pass
 
@@ -31,6 +54,7 @@ def parse_gpx_folder(folder_path):
         coords = []
         track_end_indices = []
         elevations = []
+        point_elevations = []
         distances = [0.0]
         total_dist = 0.0
         elev_gain = 0.0
@@ -52,6 +76,7 @@ def parse_gpx_folder(folder_path):
                     
                     ele = pt.elevation if pt.elevation is not None else 0.0
                     elevations.append(ele)
+                    point_elevations.append(pt.elevation)
 
                     if prev_pt is not None:
                         d = pt.distance_2d(prev_pt)
@@ -78,6 +103,8 @@ def parse_gpx_folder(folder_path):
             "sort_key": start_time.timestamp() if start_time else 0,
             "coords": coords,
             "track_end_indices": track_end_indices,
+            "distances_m": distances,
+            "point_elevations": point_elevations,
             "elevations": resampled_ele,
             "distance_km": total_dist / 1000.0,
             "elev_gain_m": elev_gain,
@@ -86,6 +113,247 @@ def parse_gpx_folder(folder_path):
 
     activities.sort(key=lambda x: x["sort_key"])
     return activities, all_lats, all_lons
+
+def validate_theme(background, transparent_theme):
+    if background not in ("dark", "white", "transparent"):
+        raise ValueError(f"Unknown background: {background}")
+    if transparent_theme is not None and transparent_theme not in ("light", "dark"):
+        raise ValueError(f"Unknown transparent theme: {transparent_theme}")
+    if transparent_theme is not None and background != "transparent":
+        raise ValueError("Transparent theme requires a transparent background.")
+
+def theme_colors(background, transparent_theme=None):
+    dark = background == "dark" or (background == "transparent" and transparent_theme == "dark")
+    border = "#aab4bd" if background == "transparent" and dark else ("#3a404a" if dark else "#6c757d")
+    return {
+        "dark": dark,
+        "background": "#121417" if background == "dark" else ("white" if background == "white" else "none"),
+        "text": "#e0e6ed" if dark else "#121417",
+        "border": border,
+        "summary": "#25313a" if dark else "#e1e9e9",
+        "divider": "#2b303a" if background == "dark" else border,
+    }
+
+def assign_day_colors(activities):
+    day_colors = {}
+    for act in activities:
+        if act["date"] not in day_colors:
+            day_colors[act["date"]] = DAY_COLORS[len(day_colors) % len(DAY_COLORS)]
+        act["color"] = day_colors[act["date"]]
+
+def summarize(activities):
+    durations = [act["duration_s"] for act in activities if act["duration_s"] is not None]
+    if durations:
+        hours, remainder = divmod(round(sum(durations)), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        elapsed = f"{hours}h {minutes:02d}m {seconds:02d}s"
+        if len(durations) < len(activities):
+            elapsed += " (partial)"
+    else:
+        elapsed = "unavailable"
+    return {
+        "distance_km": sum(act["distance_km"] for act in activities),
+        "elev_gain_m": sum(act["elev_gain_m"] for act in activities),
+        "elapsed": elapsed,
+    }
+
+def wheel_sectors(activities):
+    """Return the gap between sectors and (activity, start, end) angles for rides with distance."""
+    rides = [act for act in activities if act["distance_km"] > 0]
+    total_distance = sum(act["distance_km"] for act in activities)
+    gap_rad = min(math.radians(1.5), (2 * math.pi - SUMMARY_SPAN) / (4 * (len(rides) + 1)))
+    available_span = 2 * math.pi - SUMMARY_SPAN - (len(rides) + 1) * gap_rad
+    theta_start = SUMMARY_SPAN / 2 + gap_rad
+    sectors = []
+    for act in rides:
+        theta_end = theta_start + available_span * act["distance_km"] / total_distance
+        sectors.append((act, theta_start, theta_end))
+        theta_start = theta_end + gap_rad
+    return gap_rad, sectors
+
+def gradient_band(gradient):
+    return next(index for index, (upper, _, _) in enumerate(GRADIENT_BANDS) if gradient < upper)
+
+def ride_profile(act):
+    """Resample a ride by distance with interpolated elevation and smoothed gradient."""
+    distances = np.asarray(act["distances_m"], dtype=float)
+    total = distances[-1]
+    if total <= 0:
+        return None
+    step = max(10.0, total / PROFILE_MAX_SAMPLES)
+    samples = np.append(np.arange(0, total, step), total)
+    unique_distances, first = np.unique(distances, return_index=True)
+    coords = np.asarray(act["coords"], dtype=float)
+    lons = np.interp(samples, unique_distances, coords[first, 0])
+    lats = np.interp(samples, unique_distances, coords[first, 1])
+
+    raw = np.array([np.nan if ele is None else ele for ele in act["point_elevations"]], dtype=float)
+    valid = ~np.isnan(raw)
+    has_elevation = bool(valid.any())
+    if has_elevation:
+        valid_distances, valid_first = np.unique(distances[valid], return_index=True)
+        elevations = np.interp(samples, valid_distances, raw[valid][valid_first])
+    else:
+        elevations = np.zeros_like(samples)
+
+    window = max(1, round(PROFILE_SMOOTHING_M / step))
+    padded = np.pad(elevations, (window // 2, window - 1 - window // 2), mode="edge")
+    smoothed = np.convolve(padded, np.ones(window) / window, mode="valid")
+    half = max(1, round(GRADIENT_WINDOW_M / 2 / step))
+    index = np.arange(len(samples))
+    low = np.clip(index - half, 0, len(samples) - 1)
+    high = np.clip(index + half, 0, len(samples) - 1)
+    run = samples[high] - samples[low]
+    gradients = np.divide(
+        (smoothed[high] - smoothed[low]) * 100, run, out=np.zeros_like(run), where=run > 0,
+    )
+    return {
+        "distance_m": samples,
+        "elevation_m": elevations,
+        "gradient_pct": gradients,
+        "band": [gradient_band(gradient) for gradient in gradients],
+        "lat": lats,
+        "lon": lons,
+        "has_elevation": has_elevation,
+    }
+
+def split_tracks(act, min_spacing_m):
+    """Split a ride into per-track [lat, lon] polylines, keeping points at least min_spacing_m apart."""
+    tracks = []
+    start = 0
+    for end in act["track_end_indices"]:
+        points = []
+        last = None
+        for index in range(start, end + 1):
+            distance = act["distances_m"][index]
+            if last is None or index == end or distance - last >= min_spacing_m:
+                lon, lat = act["coords"][index]
+                points.append([round(lat, 6), round(lon, 6)])
+                last = distance
+        tracks.append(points)
+        start = end + 1
+    return tracks
+
+def group_days(activities):
+    days = {}
+    for act in activities:
+        days.setdefault(act["date"], {"date": act["date"], "color": act["color"], "rides": []})["rides"].append(act)
+    return list(days.values())
+
+def _rounded(values, digits):
+    return [round(float(value), digits) for value in values]
+
+def day_payload(day):
+    profile = {key: [] for key in ("distance_km", "elevation_m", "gradient_pct", "band", "lat", "lon")}
+    boundaries_km = []
+    rides = []
+    has_elevation = False
+    offset = 0.0
+    for act in day["rides"]:
+        tracks = split_tracks(act, min_spacing_m=5)
+        rides.append({
+            "name": act["name"],
+            "distance_km": round(act["distance_km"], 3),
+            "elev_gain_m": round(act["elev_gain_m"], 1),
+            "tracks": tracks,
+            "ends": [track[-1] for track in tracks],
+        })
+        ride = ride_profile(act)
+        if ride is not None:
+            if profile["distance_km"]:
+                boundaries_km.append(round(offset / 1000, 3))
+            profile["distance_km"] += _rounded((ride["distance_m"] + offset) / 1000, 3)
+            profile["elevation_m"] += _rounded(ride["elevation_m"], 1)
+            profile["gradient_pct"] += _rounded(ride["gradient_pct"], 1)
+            profile["band"] += ride["band"]
+            profile["lat"] += _rounded(ride["lat"], 6)
+            profile["lon"] += _rounded(ride["lon"], 6)
+            has_elevation = has_elevation or ride["has_elevation"]
+            offset += ride["distance_m"][-1]
+    totals = summarize(day["rides"])
+    return {
+        "date": day["date"],
+        "color": day["color"],
+        "distance_km": round(totals["distance_km"], 3),
+        "elev_gain_m": round(totals["elev_gain_m"], 1),
+        "elapsed": totals["elapsed"],
+        "rides": rides,
+        "profile": profile,
+        "ride_boundaries_km": boundaries_km,
+        "has_elevation": has_elevation,
+    }
+
+def wheel_payload(activities, colors, day_page):
+    all_eles = np.concatenate([act["elevations"] for act in activities])
+    min_ele = np.min(all_eles)
+    ele_span = max(np.max(all_eles) - min_ele, 1.0)
+    gap_rad, sectors = wheel_sectors(activities)
+    totals = summarize(activities)
+    return {
+        "theme": colors,
+        "day_page": day_page,
+        "radii": {"base": R_ELE_BASE, "peak": R_ELE_MAX, "label": R_LABEL, "max": R_MAX},
+        "summary_span": SUMMARY_SPAN,
+        "gap": gap_rad,
+        "summary": [
+            "ALL RIDES",
+            f"{totals['distance_km']:,.1f} km | +{totals['elev_gain_m']:,.0f} m",
+            f"Time: {totals['elapsed']}",
+        ],
+        "sectors": [{
+            "date": act["date"],
+            "color": act["color"],
+            "start": start,
+            "end": end,
+            "label": f"{act['date']} | {act['name']}",
+            "stats": f"{act['distance_km']:.1f} km | +{act['elev_gain_m']:.0f} m",
+            "profile": _rounded((act["elevations"] - min_ele) / ele_span, 4),
+        } for act, start, end in sectors],
+        "days": [{
+            "date": day["date"],
+            "color": day["color"],
+            "tracks": [track for act in day["rides"] for track in split_tracks(act, min_spacing_m=50)],
+        } for day in group_days(activities)],
+    }
+
+def render_page(template_name, payload):
+    template = (TEMPLATE_DIR / template_name).read_text(encoding="utf-8")
+    # Escape characters that could close the script element when GPX names are embedded.
+    data = (json.dumps(payload, allow_nan=False, separators=(",", ":"))
+            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
+    return template.replace("__WHEEL_DATA__", data)
+
+def create_interactive_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None):
+    validate_theme(background, transparent_theme)
+    wheel_path = Path(output_file if output_file is not None else Path(gpx_folder) / "activity_wheel.html").absolute()
+    if wheel_path.suffix.lower() not in (".html", ".htm"):
+        raise ValueError("Interactive output requires an HTML file.")
+    day_path = wheel_path.with_name(f"{wheel_path.stem}_day{wheel_path.suffix}")
+    activities, _, _ = parse_gpx_folder(gpx_folder)
+    if not activities:
+        print("No valid GPX tracks found.")
+        return
+    assign_day_colors(activities)
+    colors = theme_colors(background, transparent_theme)
+    if colors["background"] == "none":
+        colors["background"] = "transparent"
+    wheel_html = render_page("wheel.html", wheel_payload(activities, colors, day_path.name))
+    day_html = render_page("day.html", {
+        "theme": colors,
+        "wheel_page": wheel_path.name,
+        "bands": [{"color": color, "label": label} for _, color, label in GRADIENT_BANDS],
+        "days": [day_payload(day) for day in group_days(activities)],
+    })
+    for path, html in ((wheel_path, wheel_html), (day_path, day_html)):
+        try:
+            path.write_text(html, encoding="utf-8")
+        except OSError as exc:
+            raise WheelSaveError(
+                f'Could not save the interactive activity wheel to "{path}": {exc}. '
+                "Use --output to select a different filename in a writable folder."
+            ) from exc
+    print(f"Saved interactive activity wheel to {wheel_path}")
+    print(f"Saved interactive day view to {day_path}")
 
 def fetch_center_map(activities, size_px=800, output_px=None):
     all_lons = [pt[0] for act in activities for pt in act["coords"]]
@@ -189,12 +457,7 @@ def draw_arc_label(ax, text, theta, radius, span, reverse, color="#e0e6ed"):
     return True
 
 def create_activity_wheel(gpx_folder, output_file=None, background="dark", transparent_theme=None):
-    if background not in ("dark", "white", "transparent"):
-        raise ValueError(f"Unknown background: {background}")
-    if transparent_theme is not None and transparent_theme not in ("light", "dark"):
-        raise ValueError(f"Unknown transparent theme: {transparent_theme}")
-    if transparent_theme is not None and background != "transparent":
-        raise ValueError("Transparent theme requires a transparent background.")
+    validate_theme(background, transparent_theme)
     output_path = Path(output_file if output_file is not None else Path(gpx_folder) / "activity_wheel.png").absolute()
     if background == "transparent" and output_path.suffix.lower() != ".png":
         raise ValueError("Transparent background requires a PNG output file.")
@@ -203,30 +466,22 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
         print("No valid GPX tracks found.")
         return
 
-    day_colors = {}
-    for act in activities:
-        if act["date"] not in day_colors:
-            day_colors[act["date"]] = DAY_COLORS[len(day_colors) % len(DAY_COLORS)]
-        act["color"] = day_colors[act["date"]]
+    assign_day_colors(activities)
 
     # 1. Setup figure and polar axis
-    dark = background == "dark" or (background == "transparent" and transparent_theme == "dark")
-    background_color = "#121417" if background == "dark" else ("white" if background == "white" else "none")
-    text_color = "#e0e6ed" if dark else "#121417"
-    border_color = "#aab4bd" if background == "transparent" and dark else ("#3a404a" if dark else "#6c757d")
+    colors = theme_colors(background, transparent_theme)
+    background_color = colors["background"]
+    text_color = colors["text"]
+    border_color = colors["border"]
     dpi = 300
     fig = plt.figure(figsize=(12, 12), dpi=dpi, facecolor=background_color)
     ax = fig.add_subplot(111, projection="polar", facecolor=background_color)
     ax.set_theta_zero_location("N")  # Start at 12 o'clock
     ax.set_theta_direction(-1)       # Go clockwise
-    ax.set_ylim(0, 1.85)
+    ax.set_ylim(0, R_MAX)
     ax.axis("off")
     ax.apply_aspect()
 
-    # Radial layout dimensions
-    R_ELE_BASE = 1.06    # Inner ring where elevation starts
-    R_ELE_MAX = 1.45     # Outer limit for highest elevation peak
-    R_LABEL = 1.54       # Radius of the inner label line
     R_MAP = R_ELE_BASE - 6 * ax.get_rmax() / (ax.bbox.height / 2)
 
     # 2. Embed circular map in the center using a standard Cartesian overlay axis
@@ -262,38 +517,24 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
     ele_span = max(max_ele - min_ele, 1.0)
 
     total_distance = sum(act["distance_km"] for act in activities)
-    total_gain = sum(act["elev_gain_m"] for act in activities)
-    durations = [act["duration_s"] for act in activities if act["duration_s"] is not None]
-    if durations:
-        hours, remainder = divmod(round(sum(durations)), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        elapsed = f"{hours}h {minutes:02d}m {seconds:02d}s"
-        if len(durations) < len(activities):
-            elapsed += " (partial)"
-    else:
-        elapsed = "unavailable"
+    totals = summarize(activities)
 
-    summary_span = math.radians(46)
     ax.bar(
-        0, R_ELE_MAX - R_ELE_BASE, width=summary_span, bottom=R_ELE_BASE,
-        color="#25313a" if dark else "#e1e9e9", edgecolor=border_color,
+        0, R_ELE_MAX - R_ELE_BASE, width=SUMMARY_SPAN, bottom=R_ELE_BASE,
+        color=colors["summary"], edgecolor=border_color,
     )
     ax.text(
         0, (R_ELE_BASE + R_ELE_MAX) / 2,
-        f"ALL RIDES\n{total_distance:,.1f} km | +{total_gain:,.0f} m\nTime: {elapsed}",
+        f"ALL RIDES\n{totals['distance_km']:,.1f} km | +{totals['elev_gain_m']:,.0f} m\nTime: {totals['elapsed']}",
         ha="center", va="center", fontsize=8.5, color=text_color,
     )
 
-    rides = [act for act in activities if act["distance_km"] > 0]
     if total_distance == 0:
         print("No positive ride distances; showing totals without ride sectors.")
-    gap_rad = min(math.radians(1.5), (2 * math.pi - summary_span) / (4 * (len(rides) + 1)))
-    available_span = 2 * math.pi - summary_span - (len(rides) + 1) * gap_rad
-    theta_start = summary_span / 2 + gap_rad
+    gap_rad, sectors = wheel_sectors(activities)
 
-    for act in rides:
-        sector_span = available_span * act["distance_km"] / total_distance
-        theta_end = theta_start + sector_span
+    for act, theta_start, theta_end in sectors:
+        sector_span = theta_end - theta_start
         thetas = np.linspace(theta_start, theta_end, len(act["elevations"]))
 
         # Scale elevation to radial height
@@ -305,8 +546,7 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
         ax.plot(thetas, radii, color=act["color"], lw=1.8)
 
         # Add radial divider line
-        divider_color = "#2b303a" if background == "dark" else border_color
-        ax.plot([theta_start - gap_rad/2]*2, [R_ELE_BASE, R_ELE_MAX], color=divider_color, lw=0.8, ls="--")
+        ax.plot([theta_start - gap_rad/2]*2, [R_ELE_BASE, R_ELE_MAX], color=colors["divider"], lw=0.8, ls="--")
 
         # Keep the date above the stats on both halves of the wheel.
         mid_theta = (theta_start + theta_end) / 2
@@ -318,7 +558,6 @@ def create_activity_wheel(gpx_folder, output_file=None, background="dark", trans
         stats_drawn = draw_arc_label(ax, stats, mid_theta, stats_radius, sector_span, reverse, color=text_color)
         if not (date_drawn and stats_drawn):
             print(f"Ride sector too narrow for the full rim label: {ride_label} ({stats})")
-        theta_start = theta_end + gap_rad
 
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
@@ -364,7 +603,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-o", "--output",
-        help="output image path (default: activity_wheel.png in the GPX directory)",
+        help="output path (default: activity_wheel.png, or activity_wheel.html with --interactive, "
+             "in the GPX directory)",
     )
     parser.add_argument(
         "--background", choices=("dark", "white", "transparent"), default="dark",
@@ -374,14 +614,22 @@ if __name__ == "__main__":
         "--transparent-theme", choices=("light", "dark"),
         help="intended background for a transparent PNG (default: light)",
     )
+    parser.add_argument(
+        "--interactive", action="store_true",
+        help="write an interactive HTML activity wheel and a linked day view instead of a PNG",
+    )
     args = parser.parse_args()
     if not os.path.isdir(args.gpx_folder):
         parser.error(f"GPX directory does not exist or is not a directory: {args.gpx_folder}")
-    if args.background == "transparent" and args.output and Path(args.output).suffix.lower() != ".png":
+    output_suffix = Path(args.output).suffix.lower() if args.output else None
+    if args.interactive and args.output and output_suffix not in (".html", ".htm"):
+        parser.error("Interactive output requires an HTML file.")
+    if not args.interactive and args.background == "transparent" and args.output and output_suffix != ".png":
         parser.error("Transparent background requires a PNG output file.")
     if args.transparent_theme is not None and args.background != "transparent":
         parser.error("--transparent-theme requires --background transparent.")
+    create = create_interactive_wheel if args.interactive else create_activity_wheel
     try:
-        create_activity_wheel(args.gpx_folder, args.output, args.background, args.transparent_theme)
+        create(args.gpx_folder, args.output, args.background, args.transparent_theme)
     except WheelSaveError as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")

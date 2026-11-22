@@ -67,6 +67,28 @@ filename in an existing writable folder:
 python src\generate-wheel.py "C:\path\to\gpx_tracks" --output "$env:TEMP\activity_wheel_new.png"
 ~~~
 
+### Interactive HTML pages
+
+Use `--interactive` to write two linked HTML pages instead of the PNG:
+
+~~~powershell
+python src\generate-wheel.py "C:\path\to\gpx_tracks" --interactive
+~~~
+
+- `activity_wheel.html` is the interactive activity wheel. Click a ride's
+  elevation profile, its label or its route on the centre map to open that day.
+- `activity_wheel_day.html` shows the selected day on a zoomable map, with an
+  elevation profile underneath. The profile is coloured by gradient (see the
+  legend on the page), and hovering over the profile or the route shows the
+  same position on both. Rides on the same date are shown together, with
+  dashed lines between them in the profile. Use **← Activity wheel** to
+  return, or the previous/next links to change day.
+
+With `--output`, the wheel page uses the given `.html` filename and the day
+page is saved next to it with `_day` added to the name. Keep the two files in
+the same folder. The pages load Leaflet and the map tiles from the internet
+when opened. `--background` and `--transparent-theme` also set the page colours.
+
 ## How to use with Strava Data
 
 1. Export from Strava:

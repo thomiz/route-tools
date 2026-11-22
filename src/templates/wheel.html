@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activity wheel</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--background); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  #wheel-container { position: relative; width: min(96vw, calc(100vh - 3.5rem)); aspect-ratio: 1; margin-top: 1vh; }
+  #center-map {
+    position: absolute; border-radius: 50%; overflow: hidden; z-index: 1;
+    background: var(--summary);
+  }
+  #center-map .leaflet-interactive { cursor: pointer; }
+  #wheel { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; pointer-events: none; }
+  .sector { pointer-events: auto; cursor: pointer; outline: none; }
+  .sector .hit { fill-opacity: 0; transition: fill-opacity 0.15s; }
+  .sector:hover .hit, .sector:focus-visible .hit { fill-opacity: 0.18; }
+  .sector:focus-visible .hit { stroke: var(--text); stroke-width: 1.5; }
+  .sector text { fill: var(--text); dominant-baseline: central; }
+  footer {
+    width: min(96vw, calc(100vh - 3.5rem)); display: flex; justify-content: space-between;
+    gap: 1rem; font-size: 0.8rem; opacity: 0.85; padding: 0.4rem 0;
+  }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<div id="wheel-container">
+  <div id="center-map" role="img" aria-label="Map of all rides"></div>
+  <svg id="wheel" viewBox="0 0 1000 1000" role="group" aria-label="Activity wheel"></svg>
+</div>
+<footer>
+  <span>Click a ride on the wheel or map to explore that day.</span>
+  <span>&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors</span>
+</footer>
+<script>const DATA = __WHEEL_DATA__;</script>
+<script>
+(() => {
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const theme = DATA.theme;
+  for (const [name, value] of Object.entries(theme)) {
+    document.documentElement.style.setProperty(`--${name}`, value);
+  }
+
+  const CENTER = 500;
+  const SCALE = 490 / DATA.radii.max;
+  const BASE_FONT = 12.5;
+  const MAP_RADIUS = DATA.radii.base - 0.025;
+  const svg = document.getElementById("wheel");
+
+  const polar = (theta, r) => [CENTER + r * SCALE * Math.sin(theta), CENTER - r * SCALE * Math.cos(theta)];
+  const fmt = n => n.toFixed(2);
+  const point = (theta, r) => polar(theta, r).map(fmt).join(" ");
+
+  function element(name, attributes = {}, parent = svg) {
+    const node = document.createElementNS(SVG_NS, name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+    parent.appendChild(node);
+    return node;
+  }
+
+  function arc(t0, t1, r) {
+    const large = Math.abs(t1 - t0) > Math.PI ? 1 : 0;
+    const sweep = t1 > t0 ? 1 : 0;
+    return `M${point(t0, r)}A${fmt(r * SCALE)} ${fmt(r * SCALE)} 0 ${large} ${sweep} ${point(t1, r)}`;
+  }
+
+  function annulus(t0, t1, r0, r1) {
+    const large = t1 - t0 > Math.PI ? 1 : 0;
+    return `${arc(t0, t1, r1)}L${point(t1, r0)}` +
+      `A${fmt(r0 * SCALE)} ${fmt(r0 * SCALE)} 0 ${large} 0 ${point(t0, r0)}Z`;
+  }
+
+  function dayUrl(date) {
+    return `${DATA.day_page}#${encodeURIComponent(date)}`;
+  }
+
+  // Text follows an arc; the lower half runs counterclockwise so its letters stay upright.
+  function arcLabel(group, id, text, mid, span, radius, reverse) {
+    const half = span / 2;
+    element("path", {
+      id, fill: "none",
+      d: reverse ? arc(mid + half, mid - half, radius) : arc(mid - half, mid + half, radius),
+    }, group);
+    const label = element("text", {"font-size": BASE_FONT, "text-anchor": "middle"}, group);
+    const path = element("textPath", {href: `#${id}`, startOffset: "50%"}, label);
+    path.textContent = text;
+    const available = 0.9 * span * radius * SCALE;
+    const width = label.getComputedTextLength();
+    if (width > available) {
+      const size = BASE_FONT * available / width;
+      if (size < 1.5) label.remove();
+      else label.setAttribute("font-size", size.toFixed(2));
+    }
+  }
+
+  const {base, peak, label: labelRadius} = DATA.radii;
+
+  element("circle", {
+    cx: CENTER, cy: CENTER, r: fmt(MAP_RADIUS * SCALE),
+    fill: "none", stroke: theme.border, "stroke-width": 3,
+  });
+
+  // Totals sector at 12 o'clock
+  const half = DATA.summary_span / 2;
+  element("path", {d: annulus(-half, half, base, peak), fill: theme.summary, stroke: theme.border});
+  const [sx, sy] = polar(0, (base + peak) / 2);
+  const summary = element("text", {
+    x: fmt(sx), y: fmt(sy - BASE_FONT * 1.25), "font-size": BASE_FONT,
+    "text-anchor": "middle", "dominant-baseline": "central", fill: theme.text,
+  });
+  DATA.summary.forEach((line, index) => {
+    const span = element("tspan", {x: fmt(sx), dy: index ? "1.25em" : 0}, summary);
+    span.textContent = line;
+  });
+
+  DATA.sectors.forEach((sector, index) => {
+    const {start, end} = sector;
+    const divider = start - DATA.gap / 2;
+    const [x1, y1] = polar(divider, base);
+    const [x2, y2] = polar(divider, peak);
+    element("line", {
+      x1: fmt(x1), y1: fmt(y1), x2: fmt(x2), y2: fmt(y2),
+      stroke: theme.divider, "stroke-width": 1.2, "stroke-dasharray": "5 4",
+    });
+
+    const link = element("a", {
+      class: "sector", href: dayUrl(sector.date),
+      "aria-label": `${sector.label}, ${sector.stats}. Open day view.`,
+    });
+    element("title", {}, link).textContent = `${sector.label}\n${sector.stats}\nClick to explore this day`;
+    element("path", {class: "hit", d: annulus(start, end, base, labelRadius + 0.13), fill: sector.color}, link);
+
+    const count = sector.profile.length;
+    const thetas = sector.profile.map((_, i) => start + (end - start) * i / Math.max(count - 1, 1));
+    const top = sector.profile.map((value, i) => point(thetas[i], base + value * (peak - base)));
+    const bottom = thetas.slice().reverse().map(theta => point(theta, base));
+    element("path", {d: `M${top.join("L")}L${bottom.join("L")}Z`, fill: sector.color, "fill-opacity": 0.45}, link);
+    element("path", {d: `M${top.join("L")}`, fill: "none", stroke: sector.color, "stroke-width": 2.6}, link);
+
+    const mid = (start + end) / 2;
+    const reverse = Math.cos(mid) < 0;
+    const [dateRadius, statsRadius] = reverse ? [labelRadius, labelRadius + 0.08] : [labelRadius + 0.08, labelRadius];
+    arcLabel(link, `label-${index}`, sector.label, mid, end - start, dateRadius, reverse);
+    arcLabel(link, `stats-${index}`, sector.stats, mid, end - start, statsRadius, reverse);
+  });
+
+  // Overview map inside the centre circle; the SVG viewBox is 1000 units wide, so 10 units = 1 %.
+  const mapElement = document.getElementById("center-map");
+  const offset = (CENTER - MAP_RADIUS * SCALE) / 10;
+  const diameter = MAP_RADIUS * SCALE / 5;
+  Object.assign(mapElement.style, {left: `${offset}%`, top: `${offset}%`, width: `${diameter}%`, height: `${diameter}%`});
+  const map = L.map(mapElement, {
+    zoomControl: false, attributionControl: false, dragging: false, scrollWheelZoom: false,
+    doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false, zoomSnap: 0.25,
+  });
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom: 19}).addTo(map);
+  const routes = L.featureGroup().addTo(map);
+  for (const day of DATA.days) {
+    for (const track of day.tracks) {
+      if (track.length > 1) {
+        L.polyline(track, {color: day.color, weight: 3, opacity: 0.95})
+          .bindTooltip(day.date, {sticky: true})
+          .on("click", () => { window.location.href = dayUrl(day.date); })
+          .addTo(routes);
+      }
+      L.circleMarker(track[track.length - 1], {
+        radius: 2.5, stroke: false, fillColor: "black", fillOpacity: 1, interactive: false,
+      }).addTo(routes);
+    }
+  }
+  const fit = () => {
+    map.invalidateSize();
+    const padding = mapElement.clientWidth * 0.16;
+    map.fitBounds(routes.getBounds(), {padding: [padding, padding], animate: false});
+  };
+  fit();
+  window.addEventListener("resize", fit);
+})();
+</script>
+</body>
+</html>

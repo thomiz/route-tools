@@ -47,4 +47,4 @@ python src\generate-wheel.py "C:\path\to\gpx_tracks" --output "$env:TEMP\activit
 
 ## Example output
 
-![test](test/activity_wheel.png)
+![test](activity_wheel.png)
